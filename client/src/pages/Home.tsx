@@ -1,33 +1,242 @@
-import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
-import { Loader2 } from "lucide-react";
-import { Streamdown } from 'streamdown';
+import { Input } from "@/components/ui/input";
+import { trpc } from "@/lib/trpc";
+import { calculateProbe, calculateStabilityScore, estimateTimeSync, median, type SyncEstimate, type TimeProbe, validateRoomCode } from "@shared/timeMath";
+import { Activity, ArrowDownUp, ChevronRight, Clock3, Cpu, Database, Gauge, Globe2, Network, Radio, RefreshCw, ShieldCheck, Signal, TimerReset, TriangleAlert, Waves, Zap } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { toast } from "sonner";
 
-/**
- * All content in this page are only for example, replace with your own feature implementation
- * When building pages, remember your instructions in Frontend Workflow, Frontend Best Practices, Design Guide and Common Pitfalls
- */
+type Peer = { id: string; offsetMs: number; uncertaintyMs: number; jitterMs: number; sampleCount: number; updatedAt: number };
+
+const BURST_SIZE = 10;
+
+function formatNumber(value: number, digits = 3) {
+  if (!Number.isFinite(value)) return "—";
+  return value.toFixed(digits);
+}
+
+function formatOffset(value: number | null | undefined) {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "unavailable";
+  return `${value >= 0 ? "+" : ""}${formatNumber(value)} ms`;
+}
+
+function formatUncertainty(value: number | null | undefined) {
+  return value === null || value === undefined || !Number.isFinite(value) ? "± unavailable" : `± ${formatNumber(Math.abs(value))} ms`;
+}
+
+function confidenceTone(confidence: "high" | "medium" | "low") {
+  return confidence === "high" ? "text-[#a3e635] bg-[#a3e635]/10 border-[#a3e635]/35" : confidence === "medium" ? "text-amber-300 bg-amber-300/10 border-amber-300/35" : "text-red-300 bg-red-400/10 border-red-400/35";
+}
+
+function deriveConfidence(uncertaintyMs: number, samples: number): "high" | "medium" | "low" {
+  if (uncertaintyMs <= 3 && samples >= 3) return "high";
+  if (uncertaintyMs <= 15 && samples >= 3) return "medium";
+  return "low";
+}
+
+function createId(prefix: string) {
+  return `${prefix}-${crypto.randomUUID().replaceAll("-", "").slice(0, 20)}`;
+}
+
+function renderPreciseUtc(epochMs: number) {
+  const whole = Math.floor(epochMs);
+  const date = new Date(whole);
+  const base = date.toISOString().replace("T", " ").replace("Z", "");
+  const micros = Math.floor(Math.max(0, epochMs - whole) * 1000).toString().padStart(3, "0");
+  return `${base}${micros} UTC`;
+}
+
+function SectionLabel({ icon: Icon, children }: { icon: typeof Clock3; children: string }) {
+  return <div className="flex items-center gap-2 text-[10px] font-bold tracking-[.2em] text-[#a3e635]"><Icon className="h-3.5 w-3.5" />{children}</div>;
+}
+
 export default function Home() {
-  // The useAuth hook provides authentication state.
-  // To implement login/logout, call logout(), or start login from an event
-  // handler: onClick={() => startLogin()} (imported from "@/const"). Never call
-  // startLogin() during render (no href={startLogin()}) — it mints a one-time
-  // nonce cookie and must run only at the moment of navigation.
-  let { user, loading, error, isAuthenticated, logout } = useAuth();
+  const [sessionId] = useState(() => createId("session"));
+  const [estimate, setEstimate] = useState<SyncEstimate | null>(null);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [clockEpoch, setClockEpoch] = useState(() => performance.timeOrigin + performance.now());
+  const [timerResolutionUs, setTimerResolutionUs] = useState<number | null>(null);
+  const [roomInput, setRoomInput] = useState("MESH1");
+  const [activeRoom, setActiveRoom] = useState<string | null>(null);
+  const [peerId, setPeerId] = useState<string | null>(null);
+  const [peerStatus, setPeerStatus] = useState<"offline" | "connecting" | "connected">("offline");
+  const [peers, setPeers] = useState<Peer[]>([]);
+  const socketRef = useRef<WebSocket | null>(null);
+  const estimateRef = useRef<SyncEstimate | null>(null);
+  const recordBurst = trpc.chronomesh.recordBurst.useMutation();
+  const health = trpc.chronomesh.upstreamHealth.useQuery(undefined, { staleTime: 20_000, retry: 1 });
 
-  // If theme is switchable in App.tsx, we can implement theme toggling like this:
-  // const { theme, toggleTheme } = useTheme();
+  const authorityOffset = useMemo(() => {
+    const offsets = (health.data?.readings ?? []).flatMap(reading => reading.offsetMs === null ? [] : [reading.offsetMs]);
+    return offsets.length ? median(offsets) : 0;
+  }, [health.data]);
+  const authorityUncertainty = useMemo(() => {
+    const values = (health.data?.readings ?? []).flatMap(reading => reading.uncertaintyMs === null ? [] : [reading.uncertaintyMs]);
+    return values.length ? median(values) : 0;
+  }, [health.data]);
+  const correctedOffset = (estimate?.offsetMs ?? 0) + authorityOffset;
+  const totalUncertainty = (estimate?.uncertaintyMs ?? Infinity) + authorityUncertainty;
+
+  const sendCurrentReport = useCallback((nextEstimate: SyncEstimate | null = estimateRef.current) => {
+    const socket = socketRef.current;
+    if (!nextEstimate || socket?.readyState !== WebSocket.OPEN) return;
+    socket.send(JSON.stringify({ type: "report", offsetMs: nextEstimate.offsetMs, uncertaintyMs: nextEstimate.uncertaintyMs, jitterMs: nextEstimate.jitterMs, sampleCount: nextEstimate.samples.length }));
+  }, []);
+
+  const runSync = useCallback(async () => {
+    if (isSyncing) return;
+    setIsSyncing(true);
+    const probes: TimeProbe[] = [];
+    try {
+      for (let sampleIndex = 1; sampleIndex <= BURST_SIZE; sampleIndex += 1) {
+        const t1 = Date.now();
+        const response = await fetch("/api/timesync", { cache: "no-store", headers: { "x-chronomesh-probe": "burst" } });
+        const t4 = Date.now();
+        if (!response.ok) throw new Error("The ChronoMesh time edge did not respond.");
+        const data = await response.json() as { serverReceiveMs: number; serverSendMs: number };
+        probes.push(calculateProbe(sampleIndex, t1, data.serverReceiveMs, data.serverSendMs, t4));
+      }
+      const nextEstimate = estimateTimeSync(probes);
+      setEstimate(nextEstimate);
+      estimateRef.current = nextEstimate;
+      sendCurrentReport(nextEstimate);
+      recordBurst.mutate({
+        sessionId,
+        burstId: createId("burst"),
+        roomCode: activeRoom,
+        samples: probes.map(({ sampleIndex, t1, t2, t3, t4 }) => ({ sampleIndex, t1, t2, t3, t4 })),
+      });
+      toast.success(`Burst synchronized: ${formatOffset(nextEstimate.offsetMs)} ${formatUncertainty(nextEstimate.uncertaintyMs)}`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Synchronization did not complete.");
+    } finally {
+      setIsSyncing(false);
+    }
+  }, [activeRoom, isSyncing, recordBurst, sendCurrentReport, sessionId]);
+
+  const joinRoom = useCallback(() => {
+    const roomCode = roomInput.trim().toUpperCase();
+    if (!validateRoomCode(roomCode)) {
+      toast.error("Use an exactly five-character room code (A–Z, 0–9).");
+      return;
+    }
+    socketRef.current?.close();
+    setPeerStatus("connecting");
+    setPeers([]);
+    const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+    const socket = new WebSocket(`${protocol}://${window.location.host}/ws/room`);
+    socketRef.current = socket;
+    socket.onopen = () => socket.send(JSON.stringify({ type: "join", roomCode }));
+    socket.onmessage = event => {
+      const message = JSON.parse(String(event.data)) as { type: string; roomCode?: string; peerId?: string; peers?: Peer[]; message?: string };
+      if (message.type === "identity" && message.peerId) setPeerId(message.peerId);
+      if (message.type === "joined" && message.roomCode) {
+        setActiveRoom(message.roomCode);
+        setPeerStatus("connected");
+        toast.success(`Joined anonymous mesh room ${message.roomCode}.`);
+        sendCurrentReport();
+      }
+      if (message.type === "roomState" && message.peers) setPeers(message.peers);
+      if (message.type === "error") toast.error(message.message ?? "Room transport error.");
+    };
+    socket.onerror = () => toast.error("The peer transport could not connect.");
+    socket.onclose = () => {
+      if (socketRef.current === socket) setPeerStatus("offline");
+    };
+  }, [roomInput, sendCurrentReport]);
+
+  useEffect(() => {
+    const frame = () => {
+      setClockEpoch(performance.timeOrigin + performance.now() + correctedOffset);
+      requestAnimationFrame(frame);
+    };
+    const id = requestAnimationFrame(frame);
+    return () => cancelAnimationFrame(id);
+  }, [correctedOffset]);
+
+  useEffect(() => {
+    let smallest = Infinity;
+    let previous = performance.now();
+    for (let i = 0; i < 2_000; i += 1) {
+      const current = performance.now();
+      const difference = current - previous;
+      if (difference > 0 && difference < smallest) smallest = difference;
+      previous = current;
+    }
+    setTimerResolutionUs(Number.isFinite(smallest) ? smallest * 1000 : null);
+    void runSync();
+    return () => socketRef.current?.close();
+  }, []); // Initial calibration is intentionally performed once per page session.
+
+  useEffect(() => {
+    if (peerStatus !== "connected" || !estimate) return;
+    sendCurrentReport(estimate);
+    const intervalId = window.setInterval(() => sendCurrentReport(), 5_000);
+    return () => window.clearInterval(intervalId);
+  }, [estimate, peerStatus, sendCurrentReport]);
+
+  const ownPeer = peerId ? peers.find(peer => peer.id === peerId) : undefined;
+  const rankedPeers = [...peers].sort((a, b) => Math.abs(a.offsetMs) - Math.abs(b.offsetMs));
+  const lastSample = estimate?.samples.at(-1);
+  const chartData = (estimate?.samples ?? []).map(sample => ({ sample: `#${sample.sampleIndex}`, offset: Number(sample.offsetMs.toFixed(3)), delay: Number(sample.delayMs.toFixed(3)) }));
 
   return (
-    <div className="min-h-screen flex flex-col">
-      <main>
-        {/* Example: lucide-react for icons */}
-        <Loader2 className="animate-spin" />
-        Example Page
-        {/* Example: Streamdown for markdown rendering */}
-        <Streamdown>Any **markdown** content</Streamdown>
-        <Button variant="default">Example Button</Button>
+    <div className="min-h-screen bg-[#090a0a] text-[#e4e4e7] cyber-grid selection:bg-[#a3e635] selection:text-black">
+      <header className="sticky top-0 z-20 border-b border-[#a3e635]/15 bg-[#090a0a]/90 backdrop-blur-xl">
+        <div className="mx-auto flex max-w-[1600px] items-center justify-between gap-4 px-5 py-3 lg:px-8">
+          <div className="flex items-center gap-3"><div className="grid h-8 w-8 place-items-center border border-[#a3e635]/50 bg-[#a3e635]/10"><Network className="h-4 w-4 text-[#a3e635]" /></div><div><div className="text-sm font-bold tracking-[.17em] text-[#f4f4f5]">CHRONOMESH</div><div className="numeric text-[9px] tracking-[.18em] text-[#71717a]">PRECISION CLOCK MESH / V0.1</div></div></div>
+          <div className="hidden items-center gap-5 text-[10px] tracking-[.15em] text-[#a1a1aa] md:flex"><span>UTC DISCIPLINE</span><span>ANONYMOUS PEERS</span><span>NTP TRANSPARENCY</span></div>
+          <div className="flex items-center gap-2 border border-[#a3e635]/20 bg-[#a3e635]/5 px-2.5 py-1.5 text-[10px] font-semibold tracking-wider text-[#a3e635]"><span className="live-dot h-1.5 w-1.5 rounded-full bg-[#a3e635] shadow-[0_0_9px_#a3e635]" />TIME EDGE ONLINE</div>
+        </div>
+      </header>
+
+      <main className="mx-auto max-w-[1600px] px-5 py-6 lg:px-8">
+        <section className="scanline neon-border relative mb-5 overflow-hidden bg-gradient-to-br from-[#151b0f] via-[#101110] to-[#090a0a] p-5 lg:p-7">
+          <div className="absolute right-0 top-0 h-28 w-1/2 bg-[radial-gradient(ellipse_at_top_right,rgba(163,230,53,.12),transparent_62%)]" />
+          <div className="relative grid gap-6 lg:grid-cols-[1.25fr_.75fr] lg:items-end">
+            <div><SectionLabel icon={Clock3}>CORRECTED UTC / MESH SOLUTION</SectionLabel><div className="numeric mt-3 break-all text-[clamp(1.55rem,4.2vw,4.75rem)] font-medium leading-none tracking-[-.055em] text-[#f4f4f5]">{renderPreciseUtc(clockEpoch)} <span className="whitespace-nowrap text-[.3em] tracking-normal text-[#a3e635]">{formatUncertainty(totalUncertainty)}</span></div><div className="numeric mt-4 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs"><span className="rounded border border-[#a3e635]/40 bg-[#a3e635]/10 px-2 py-1 text-[#a3e635]">UTC estimate {formatUncertainty(totalUncertainty)}</span><span className="text-[#a1a1aa]">client → mesh {formatOffset(estimate?.offsetMs)} {formatUncertainty(estimate?.uncertaintyMs)}</span></div></div>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-2"><Metric label="MESH OFFSET" value={formatOffset(estimate?.offsetMs)} detail={formatUncertainty(estimate?.uncertaintyMs)} /><Metric label="AUTHORITY OFFSET" value={formatOffset(authorityOffset)} detail={formatUncertainty(authorityUncertainty)} /><Metric label="JITTER" value={estimate ? `${formatNumber(estimate.jitterMs)} ms` : "calibrating"} detail={estimate ? formatUncertainty(estimate.jitterMs) : "± awaiting burst"} /><Metric label="CONFIDENCE" value={(estimate?.confidence ?? "low").toUpperCase()} detail={estimate ? formatUncertainty(estimate.uncertaintyMs) : "± pending"} /></div>
+          </div>
+        </section>
+
+        <div className="grid gap-5 xl:grid-cols-12">
+          <section className="cyber-card p-5 xl:col-span-8"><div className="flex flex-wrap items-start justify-between gap-4"><div><SectionLabel icon={Activity}>SYNC ENGINE / FOUR-TIMESTAMP BURST</SectionLabel><p className="mt-2 max-w-2xl text-sm leading-relaxed text-[#a1a1aa]">Ten HTTPS probes are sorted by network delay. Only the lowest-delay quartile informs the median offset; every result carries its conservative uncertainty envelope.</p></div><Button onClick={() => void runSync()} disabled={isSyncing} className="rounded-none bg-[#a3e635] px-4 font-mono text-xs font-bold text-black hover:bg-[#bef264]"><RefreshCw className={`mr-2 h-3.5 w-3.5 ${isSyncing ? "animate-spin" : ""}`} />{isSyncing ? "SYNCING 10/10" : "RUN NEW BURST"}</Button></div>
+            <div className="mt-5 grid gap-5 lg:grid-cols-[1.1fr_.9fr]"><div className="h-[238px] border border-[#a3e635]/15 bg-black/20 p-3"><div className="mb-2 flex items-center justify-between"><span className="numeric text-[10px] tracking-widest text-[#a1a1aa]">JITTER TRACE / OFFSET DISPERSION</span><span className="numeric text-[10px] text-[#a3e635]">{estimate ? `${estimate.retainedSamples.length}/${estimate.samples.length} RETAINED` : "AWAITING DATA"}</span></div><ResponsiveContainer width="100%" height="88%"><LineChart data={chartData}><CartesianGrid stroke="rgba(163,230,53,.10)" strokeDasharray="2 4" vertical={false} /><XAxis dataKey="sample" tick={{ fill: "#71717a", fontSize: 10 }} axisLine={false} tickLine={false} /><YAxis tick={{ fill: "#71717a", fontSize: 10 }} axisLine={false} tickLine={false} width={44} /><Tooltip contentStyle={{ background: "#111210", border: "1px solid rgba(163,230,53,.35)", fontFamily: "monospace", fontSize: 11 }} labelStyle={{ color: "#a3e635" }} /><Line type="monotone" dataKey="offset" name="offset ms" stroke="#a3e635" strokeWidth={2} dot={{ fill: "#a3e635", r: 3 }} activeDot={{ r: 4 }} /></LineChart></ResponsiveContainer></div>
+              <FormulaPanel sample={lastSample} timerResolutionUs={timerResolutionUs} /></div>
+            <RawSamplesTable samples={estimate?.samples ?? []} retained={new Set(estimate?.retainedSamples.map(sample => sample.sampleIndex) ?? [])} timerResolutionUs={timerResolutionUs} />
+          </section>
+
+          <section className="cyber-card p-5 xl:col-span-4"><div className="flex items-center justify-between gap-3"><SectionLabel icon={Globe2}>SERVER NTP HEALTH / WORLD LAYER</SectionLabel><Button variant="outline" size="sm" onClick={() => health.refetch()} className="h-7 rounded-none border-[#a3e635]/30 bg-transparent px-2 text-[10px] text-[#a3e635] hover:bg-[#a3e635]/10 hover:text-[#a3e635]"><RefreshCw className={`mr-1 h-3 w-3 ${health.isFetching ? "animate-spin" : ""}`} />REFRESH</Button></div><p className="mt-2 text-xs leading-relaxed text-[#a1a1aa]">The time edge queries these specific public authorities with the same four-timestamp model. Offset is authority minus this backend's system clock.</p><div className="mt-4 space-y-2">{(health.data?.readings ?? []).map(reading => <AuthorityRow key={reading.id} reading={reading} />)}{health.isLoading && <div className="numeric py-8 text-center text-xs text-[#71717a]">QUERYING UPSTREAM AUTHORITIES…</div>}{health.isError && <div className="flex gap-2 border border-red-400/25 bg-red-400/5 p-3 text-xs text-red-200"><TriangleAlert className="h-4 w-4 shrink-0" />Health data is unavailable right now; no estimated values are substituted.</div>}</div><div className="mt-4 border-t border-[#a3e635]/15 pt-3 numeric text-[10px] text-[#71717a]">LAST BACKEND SAMPLE {health.data ? new Date(health.data.generatedAt).toISOString().replace("T", " ").replace("Z", " UTC") : "—"} {formatUncertainty(authorityUncertainty)}</div></section>
+
+          <section className="cyber-card p-5 xl:col-span-7"><div className="flex flex-wrap items-start justify-between gap-4"><div><SectionLabel icon={Radio}>LIVE PEER MESH / COMMON REFERENCE</SectionLabel><p className="mt-2 max-w-xl text-xs leading-relaxed text-[#a1a1aa]">All peers report only an ephemeral ID and their offset to this same server. Relative offset cancels common server error; no peer IP address is released.</p></div><div className={`numeric flex items-center gap-2 border px-2 py-1 text-[10px] ${peerStatus === "connected" ? "border-[#a3e635]/35 text-[#a3e635]" : "border-[#52525b] text-[#a1a1aa]"}`}><Signal className="h-3.5 w-3.5" />{peerStatus.toUpperCase()}</div></div><div className="mt-4 flex flex-wrap gap-2"><Input value={roomInput} maxLength={5} onChange={event => setRoomInput(event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))} aria-label="Five-character room code" className="numeric h-9 w-44 rounded-none border-[#a3e635]/30 bg-black/25 text-center text-sm tracking-[.28em] text-[#f4f4f5] focus-visible:ring-[#a3e635]" /><Button onClick={joinRoom} className="h-9 rounded-none bg-[#a3e635] px-4 font-mono text-xs font-bold text-black hover:bg-[#bef264]"><Network className="mr-2 h-3.5 w-3.5" />JOIN ROOM</Button>{activeRoom && <div className="numeric flex items-center px-2 text-[10px] text-[#a3e635]">ROOM {activeRoom} / YOU {peerId ?? "—"}</div>}</div><PeerTable peers={rankedPeers} peerId={peerId} ownOffset={ownPeer?.offsetMs ?? estimate?.offsetMs ?? 0} ownUncertainty={ownPeer?.uncertaintyMs ?? estimate?.uncertaintyMs ?? Infinity} /></section>
+
+          <section className="cyber-card p-5 xl:col-span-5"><SectionLabel icon={Gauge}>ROOM LEADERBOARD / STABILITY INDEX</SectionLabel><p className="mt-2 text-xs leading-relaxed text-[#a1a1aa]">Ranks update on the live room stream. Stability rewards a larger retained sample base and penalizes observed offset jitter; it is not a hardware-clock certification.</p><div className="mt-4 overflow-hidden border border-[#a3e635]/15">{rankedPeers.length ? rankedPeers.map((peer, index) => { const score = calculateStabilityScore(peer.jitterMs, peer.sampleCount); return <div key={peer.id} className="numeric grid grid-cols-[26px_1fr_auto] items-center gap-2 border-b border-[#a3e635]/10 px-3 py-2.5 text-xs last:border-0"><span className="text-[#71717a]">{String(index + 1).padStart(2, "0")}</span><div><div className={peer.id === peerId ? "text-[#a3e635]" : "text-[#e4e4e7]"}>{peer.id}{peer.id === peerId ? " / YOU" : ""}</div><div className="mt-1 text-[10px] text-[#71717a]">|offset| {formatOffset(Math.abs(peer.offsetMs))} {formatUncertainty(peer.uncertaintyMs)}</div></div><div className="text-right"><div className="text-[#a3e635]">{score}/100</div><div className="mt-1 text-[10px] text-[#71717a]">{formatNumber(peer.jitterMs)}ms jitter {formatUncertainty(peer.uncertaintyMs)}</div></div></div>; }) : <div className="numeric p-6 text-center text-xs text-[#71717a]">JOIN A ROOM TO BEGIN AN ANONYMOUS COMPARISON</div>}</div></section>
+
+          <section className="cyber-card p-5 xl:col-span-12"><div className="grid gap-5 lg:grid-cols-[.9fr_1.1fr] lg:items-start"><div><SectionLabel icon={ShieldCheck}>HONEST PRECISION / LIMITS DISCLOSED</SectionLabel><div className="mt-4 grid gap-2 sm:grid-cols-2"><Metric label="BROWSER CONTEXT" value={window.crossOriginIsolated ? "ISOLATED" : "DEFAULT"} detail={window.crossOriginIsolated ? "COOP + COEP active" : "reduced timer precision"} /><Metric label="OBSERVED TIMER STEP" value={timerResolutionUs ? `${formatNumber(timerResolutionUs, 1)} µs` : "measuring"} detail={timerResolutionUs ? `± ${formatNumber(timerResolutionUs, 1)} µs floor` : "± pending"} /><Metric label="NETWORK ENVELOPE" value={estimate ? `${formatNumber(estimate.delayMs)} ms` : "pending"} detail={estimate ? formatUncertainty(estimate.uncertaintyMs) : "± pending"} /><Metric label="DISPLAY FRACTION" value="µs interpolated" detail="± not nanosecond accuracy" /></div></div><div className="space-y-3 border-l-0 border-[#a3e635]/15 lg:border-l lg:pl-5"><p className="text-sm leading-relaxed text-[#d4d4d8]">A browser can display sub-millisecond digits, but public-network synchronization is limited by packet delay asymmetry, operating-system scheduling, Wi-Fi/mobile jitter, and the browser's timer-resolution policy. ChronoMesh therefore renders every clock and offset as an estimate <span className="numeric text-[#a3e635]">value ± uncertainty</span>.</p><p className="text-xs leading-relaxed text-[#a1a1aa]">For a peer comparison, the useful number is the relative offset to a common server. For genuine nanosecond-class work, use hardware timestamping, PTP-capable equipment, and a disciplined GPS/PPS reference; this web experience does not claim that level of accuracy.</p><div className="numeric flex items-center gap-2 text-[10px] text-[#71717a]"><Database className="h-3.5 w-3.5 text-[#a3e635]" />RAW T1–T4 PROBES, COMPUTED OFFSET, DELAY, JITTER, ROOM CODE, AND SESSION ID ARE PERSISTED FOR ANALYTICS. PEER IP ADDRESSES ARE NEVER SHOWN.</div></div></div></section>
+        </div>
       </main>
+      <footer className="border-t border-[#a3e635]/10 px-5 py-5 text-center numeric text-[10px] tracking-[.14em] text-[#52525b]">CHRONOMESH / GLOBAL CLOCK COMPARISON / MEASUREMENT OVER CLAIMS</footer>
     </div>
   );
+}
+
+function Metric({ label, value, detail }: { label: string; value: string; detail: string }) {
+  return <div className="border border-[#a3e635]/14 bg-black/20 p-2.5"><div className="numeric text-[9px] tracking-[.12em] text-[#71717a]">{label}</div><div className="numeric mt-1 truncate text-xs font-medium text-[#e4e4e7]">{value}</div><div className="numeric mt-1 text-[9px] text-[#a3e635]">{detail}</div></div>;
+}
+
+function FormulaPanel({ sample, timerResolutionUs }: { sample?: TimeProbe; timerResolutionUs: number | null }) {
+  return <div className="border border-[#a3e635]/15 bg-black/20 p-3"><div className="flex items-center justify-between"><span className="numeric text-[10px] tracking-widest text-[#a1a1aa]">T1–T4 OFFSET SOLVER</span><TimerReset className="h-4 w-4 text-[#a3e635]" /></div><div className="mt-3 grid grid-cols-2 gap-2">{([ ["T1", sample?.t1, "client send"], ["T2", sample?.t2, "server receive"], ["T3", sample?.t3, "server send"], ["T4", sample?.t4, "client receive"] ] as const).map(([label, value, description]) => <div key={label} className="border border-[#a3e635]/10 p-2"><div className="numeric text-[10px] text-[#a3e635]">{label}</div><div className="numeric mt-1 text-[11px] text-[#d4d4d8]">{value ? `${Math.round(value)} ms` : "—"}</div><div className="mt-1 text-[9px] text-[#71717a]">{description} {formatUncertainty(timerResolutionUs ? timerResolutionUs / 1000 : null)}</div></div>)}</div><div className="numeric mt-3 border-l-2 border-[#a3e635] bg-[#a3e635]/5 p-2 text-[10px] leading-relaxed text-[#d4d4d8]">offset = ((T2 − T1) + (T3 − T4)) / 2<br />delay = (T4 − T1) − (T3 − T2)<br /><span className="text-[#a3e635]">{sample ? `solution: ${formatOffset(sample.offsetMs)} ${formatUncertainty(sample.delayMs / 2)}` : "run a burst to solve"}</span></div></div>;
+}
+
+function RawSamplesTable({ samples, retained, timerResolutionUs }: { samples: TimeProbe[]; retained: Set<number>; timerResolutionUs: number | null }) {
+  return <div className="mt-5 overflow-x-auto border border-[#a3e635]/15"><table className="w-full min-w-[700px] numeric text-left text-[11px]"><thead className="bg-[#a3e635]/5 text-[9px] tracking-[.14em] text-[#a1a1aa]"><tr><th className="px-3 py-2">PROBE</th><th className="px-3 py-2">OFFSET (± UNCERTAINTY)</th><th className="px-3 py-2">DELAY / RTT</th><th className="px-3 py-2">T1 → T4 WINDOW</th><th className="px-3 py-2">FILTER</th></tr></thead><tbody>{samples.length ? samples.map(sample => <tr key={sample.sampleIndex} className="border-t border-[#a3e635]/10"><td className="px-3 py-2 text-[#e4e4e7]">#{String(sample.sampleIndex).padStart(2, "0")}</td><td className="px-3 py-2 text-[#a3e635]">{formatOffset(sample.offsetMs)} {formatUncertainty(sample.delayMs / 2)}</td><td className="px-3 py-2 text-[#d4d4d8]">{formatNumber(sample.delayMs)} ms / {formatNumber(sample.rttMs)} ms {formatUncertainty(timerResolutionUs ? timerResolutionUs / 1000 : null)}</td><td className="px-3 py-2 text-[#71717a]">{Math.round(sample.t1)} → {Math.round(sample.t4)} ms {formatUncertainty(timerResolutionUs ? timerResolutionUs / 1000 : null)}</td><td className="px-3 py-2">{retained.has(sample.sampleIndex) ? <span className="border border-[#a3e635]/35 bg-[#a3e635]/10 px-1.5 py-0.5 text-[9px] text-[#a3e635]">RETAINED</span> : <span className="text-[#71717a]">REJECTED BY DELAY</span>}</td></tr>) : <tr><td colSpan={5} className="px-3 py-8 text-center text-[#71717a]">COLLECTING INITIAL PROBES…</td></tr>}</tbody></table></div>;
+}
+
+function AuthorityRow({ reading }: { reading: { id: string; name: string; host: string; status: "reachable" | "unreachable"; offsetMs: number | null; delayMs: number | null; uncertaintyMs: number | null } }) {
+  return <div className="grid grid-cols-[1fr_auto] items-center gap-3 border border-[#a3e635]/12 bg-black/15 p-3"><div><div className="flex items-center gap-2"><span className={`h-1.5 w-1.5 rounded-full ${reading.status === "reachable" ? "bg-[#a3e635]" : "bg-red-400"}`} /><span className="text-xs font-medium text-[#e4e4e7]">{reading.name}</span></div><div className="numeric mt-1 text-[10px] text-[#71717a]">{reading.host} / RTT {reading.delayMs === null ? "—" : `${formatNumber(reading.delayMs)} ms`}</div></div><div className="numeric text-right text-[11px]"><div className={reading.status === "reachable" ? "text-[#a3e635]" : "text-red-300"}>{formatOffset(reading.offsetMs)}</div><div className="mt-1 text-[9px] text-[#a1a1aa]">{formatUncertainty(reading.uncertaintyMs)}</div></div></div>;
+}
+
+function PeerTable({ peers, peerId, ownOffset, ownUncertainty }: { peers: Peer[]; peerId: string | null; ownOffset: number; ownUncertainty: number }) {
+  return <div className="mt-4 overflow-x-auto border border-[#a3e635]/15"><table className="w-full min-w-[610px] numeric text-left text-[11px]"><thead className="bg-[#a3e635]/5 text-[9px] tracking-[.14em] text-[#a1a1aa]"><tr><th className="px-3 py-2">ANONYMOUS PEER</th><th className="px-3 py-2">OFFSET → MESH</th><th className="px-3 py-2">RELATIVE → YOU</th><th className="px-3 py-2">JITTER</th><th className="px-3 py-2">CONFIDENCE</th></tr></thead><tbody>{peers.length ? peers.map(peer => { const confidence = deriveConfidence(peer.uncertaintyMs, peer.sampleCount); const relative = peer.offsetMs - ownOffset; const relativeUncertainty = Math.hypot(peer.uncertaintyMs, ownUncertainty); return <tr key={peer.id} className="border-t border-[#a3e635]/10"><td className="px-3 py-2 text-[#e4e4e7]">{peer.id}{peer.id === peerId && <span className="ml-2 text-[#a3e635]">YOU</span>}</td><td className="px-3 py-2 text-[#a3e635]">{formatOffset(peer.offsetMs)} {formatUncertainty(peer.uncertaintyMs)}</td><td className="px-3 py-2 text-[#e4e4e7]">{formatOffset(relative)} {formatUncertainty(relativeUncertainty)}</td><td className="px-3 py-2 text-[#a1a1aa]">{formatNumber(peer.jitterMs)} ms {formatUncertainty(peer.jitterMs)}</td><td className="px-3 py-2"><span className={`border px-1.5 py-0.5 text-[9px] ${confidenceTone(confidence)}`}>{confidence.toUpperCase()}</span></td></tr>; }) : <tr><td colSpan={5} className="px-3 py-8 text-center text-xs text-[#71717a]">NO LIVE REPORTS YET — JOIN A ROOM, THEN RUN A SYNC BURST.</td></tr>}</tbody></table></div>;
 }

@@ -8,6 +8,8 @@ import { registerStorageProxy } from "./storageProxy";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
+import { registerChronoMeshRoutes } from "../chronomesh.routes";
+import { attachChronoMeshRealtime } from "../realtime";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -34,8 +36,14 @@ async function startServer() {
   // Configure body parser with larger size limit for file uploads
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
+  app.use((_req, res, next) => {
+    res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+    res.setHeader("Cross-Origin-Embedder-Policy", "credentialless");
+    next();
+  });
   registerStorageProxy(app);
   registerOAuthRoutes(app);
+  registerChronoMeshRoutes(app);
   // tRPC API
   app.use(
     "/api/trpc",
@@ -44,6 +52,7 @@ async function startServer() {
       createContext,
     })
   );
+  attachChronoMeshRealtime(server);
   // development mode uses Vite, production mode uses static files
   if (process.env.NODE_ENV === "development") {
     await setupVite(app, server);

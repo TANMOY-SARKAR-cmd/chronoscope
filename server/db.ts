@@ -1,7 +1,9 @@
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
-import { InsertUser, users } from "../drizzle/schema";
+import { InsertUser, ntpHealthSnapshots, timeMeasurements, users } from "../drizzle/schema";
 import { ENV } from './_core/env';
+import type { UpstreamHealth } from "./ntp";
+import type { SyncEstimate } from "../shared/timeMath";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -89,4 +91,43 @@ export async function getUserByOpenId(openId: string) {
   return result.length > 0 ? result[0] : undefined;
 }
 
-// TODO: add feature queries here as your schema grows.
+export async function storeMeasurementBurst(input: {
+  sessionId: string;
+  burstId: string;
+  roomCode?: string | null;
+  estimate: SyncEstimate;
+}) {
+  const db = await getDb();
+  if (!db || input.estimate.samples.length === 0) return false;
+  await db.insert(timeMeasurements).values(input.estimate.samples.map(sample => ({
+    sessionId: input.sessionId,
+    burstId: input.burstId,
+    roomCode: input.roomCode ?? null,
+    sampleIndex: sample.sampleIndex,
+    clientSentMs: sample.t1,
+    serverReceivedMs: sample.t2,
+    serverSentMs: sample.t3,
+    clientReceivedMs: sample.t4,
+    offsetMs: sample.offsetMs,
+    delayMs: sample.delayMs,
+    jitterMs: input.estimate.jitterMs,
+    uncertaintyMs: input.estimate.uncertaintyMs,
+    sampleCount: input.estimate.samples.length,
+  })));
+  return true;
+}
+
+export async function storeNtpHealthSnapshots(readings: UpstreamHealth[]) {
+  const db = await getDb();
+  if (!db || readings.length === 0) return false;
+  await db.insert(ntpHealthSnapshots).values(readings.map(reading => ({
+    authority: reading.id,
+    host: reading.host,
+    status: reading.status,
+    offsetMs: reading.offsetMs,
+    delayMs: reading.delayMs,
+    uncertaintyMs: reading.uncertaintyMs,
+    sampledAtMs: reading.sampledAt,
+  })));
+  return true;
+}
