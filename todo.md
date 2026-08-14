@@ -29,4 +29,4 @@
 - [x] Add automated timezone helper coverage for browser zone availability, search matching, and corrected-UTC display formatting.
 - [x] Add automated coverage for browser timezone discovery, UTC inclusion, and the no-supportedValues fallback.
 - [x] Run database migration, type checks, automated tests, and desktop/mobile visual verification for the enhancement release.
-- [ ] Save the enhanced ChronoMesh release checkpoint and provide the version for review.
+- [x] Save the enhanced ChronoMesh release checkpoint and provide the version for review.
