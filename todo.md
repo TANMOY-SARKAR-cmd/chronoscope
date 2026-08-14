@@ -17,4 +17,16 @@
 - [x] Add explicit uncertainty labels to raw delay/RTT, leaderboard jitter, and the primary corrected UTC timestamp.
 - [x] Add Vitest coverage for measurement math, room validation, and leaderboard stability scoring.
 - [x] Run type checks, test suite, and visual responsive verification; resolve any errors.
-- [ ] Save the completed release checkpoint and provide the version for review.
+- [x] Save the completed release checkpoint and provide the version for review.
+- [x] Add opt-in anonymous peer hardware tags and descriptions with strict validation and immediate clearing behavior.
+- [x] Add a conservative user-defined offset threshold alert with uncertainty-aware boundaries and hysteresis.
+- [x] Add secure client-side CSV export for synchronization samples, jitter trace, and bounded persisted history.
+- [x] Add a searchable, virtualized all-IANA-timezone world-time rack driven by corrected UTC.
+- [x] Implement true windowing for the all-IANA-timezone picker and verify it remains driven by corrected UTC.
+- [x] Add a three-tier source explorer for curated authorities, controlled regional pool groups, and secured custom-host checks.
+- [x] Add source-catalog and source-observation persistence, secure custom-host validation, and future-ready scheduled-refresh handlers.
+- [x] Add coverage for peer metadata validation, alerts, exports, timezones, and source-validation guardrails.
+- [x] Add automated timezone helper coverage for browser zone availability, search matching, and corrected-UTC display formatting.
+- [x] Add automated coverage for browser timezone discovery, UTC inclusion, and the no-supportedValues fallback.
+- [x] Run database migration, type checks, automated tests, and desktop/mobile visual verification for the enhancement release.
+- [ ] Save the enhanced ChronoMesh release checkpoint and provide the version for review.
