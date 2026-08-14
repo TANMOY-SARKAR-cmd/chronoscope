@@ -61,3 +61,27 @@ export const ntpHealthSnapshots = mysqlTable("ntp_health_snapshots", {
   sampledAtMs: double("sampledAtMs").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 }, table => [index("ntp_health_authority_sampled_idx").on(table.authority, table.sampledAtMs), index("ntp_health_tier_sampled_idx").on(table.sourceTier, table.sampledAtMs)]);
+
+/** Signed-in preferences are private by default; room sharing remains an explicit live opt-in. */
+export const userChronoPreferences = mysqlTable("user_chrono_preferences", {
+  userId: int("userId").primaryKey(),
+  alertEnabled: boolean("alertEnabled").default(true).notNull(),
+  alertThresholdMs: double("alertThresholdMs").default(25).notNull(),
+  hardwareTemplateOptIn: boolean("hardwareTemplateOptIn").default(false).notNull(),
+  hardwareTagsJson: text("hardwareTagsJson").notNull(),
+  hardwareDescription: varchar("hardwareDescription", { length: 160 }),
+  worldZonesJson: text("worldZonesJson").notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+/** Short-lived anonymous room events permit a bounded database relay when managed pub/sub is unavailable. */
+export const roomRelayEvents = mysqlTable("room_relay_events", {
+  id: int("id").autoincrement().primaryKey(),
+  originId: varchar("originId", { length: 64 }).notNull(),
+  roomCode: varchar("roomCode", { length: 5 }).notNull(),
+  eventType: mysqlEnum("eventType", ["upsert", "remove"]).notNull(),
+  peerId: varchar("peerId", { length: 16 }).notNull(),
+  payloadJson: text("payloadJson"),
+  expiresAtMs: double("expiresAtMs").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, table => [index("room_relay_room_id_idx").on(table.roomCode, table.id), index("room_relay_expiry_idx").on(table.expiresAtMs)]);

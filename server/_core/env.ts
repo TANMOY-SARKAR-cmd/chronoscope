@@ -7,4 +7,9 @@ export const ENV = {
   isProduction: process.env.NODE_ENV === "production",
   forgeApiUrl: process.env.BUILT_IN_FORGE_API_URL ?? "",
   forgeApiKey: process.env.BUILT_IN_FORGE_API_KEY ?? "",
+  pusherAppId: process.env.PUSHER_APP_ID ?? "",
+  pusherKey: process.env.PUSHER_KEY ?? "",
+  pusherSecret: process.env.PUSHER_SECRET ?? "",
+  pusherCluster: process.env.PUSHER_CLUSTER ?? "",
+  chronomeshRealtimeMode: (process.env.CHRONOMESH_REALTIME_MODE === "single" ? "single" : process.env.CHRONOMESH_REALTIME_MODE === "database" ? "database" : "auto") as "auto" | "database" | "single",
 };

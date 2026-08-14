@@ -30,3 +30,17 @@
 - [x] Add automated coverage for browser timezone discovery, UTC inclusion, and the no-supportedValues fallback.
 - [x] Run database migration, type checks, automated tests, and desktop/mobile visual verification for the enhancement release.
 - [x] Save the enhanced ChronoMesh release checkpoint and provide the version for review.
+- [x] Add authenticated persisted user preferences for hardware context, alerts, and saved world-time zones.
+- [x] Add secure profile load/save procedures with explicit opt-in synchronization behavior.
+- [x] Add historical source-accuracy aggregation queries for selectable 24-hour, 7-day, and 30-day views.
+- [x] Build the historical source-accuracy dashboard with offset, jitter, availability, and uncertainty visualizations.
+- [x] Configure a shared pub/sub relay for cross-instance anonymous room propagation with self-echo suppression and bounded payloads.
+- [x] Configure Pusher Channels as the managed primary transport using server-only publish credentials and public subscription identifiers.
+- [x] Add database-relay and single-instance transport modes with clear runtime diagnostics and safe automatic fallback rules.
+- [x] Preserve a graceful single-instance realtime fallback when shared pub/sub is unavailable.
+- [x] Add automated coverage for profile privacy, analytics aggregation, and cross-instance relay safeguards.
+- [x] Add automated profile preference tests for private-by-default hardware templates and explicit room-sharing opt-in.
+- [x] Extract and test relay safeguards for self-echo suppression, bounded reports, and managed-to-database fallback behavior.
+- [x] Re-run the complete test suite after profile, relay, and analytics coverage is in place.
+- [x] Run migration, type checks, test suite, and desktop/mobile verification for the distributed release.
+- [ ] Save the distributed ChronoMesh release checkpoint and provide the version for review.

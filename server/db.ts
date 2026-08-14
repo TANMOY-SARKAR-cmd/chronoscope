@@ -1,9 +1,10 @@
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq, gt, gte } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
-import { InsertUser, ntpHealthSnapshots, timeMeasurements, timeSources, users } from "../drizzle/schema";
+import { InsertUser, ntpHealthSnapshots, roomRelayEvents, timeMeasurements, timeSources, userChronoPreferences, users } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 import type { SyncEstimate } from "../shared/timeMath";
 import type { TimeSource, UpstreamHealth } from "./ntp";
+import { aggregateSourceAccuracy, getSourceRangeStart, type SourceAccuracyRange } from "../shared/sourceAnalytics";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 export async function getDb() {
@@ -45,4 +46,49 @@ export async function storeNtpHealthSnapshots(readings: UpstreamHealth[]) {
   await db.insert(timeSources).values(persistent.map(reading => ({ id: reading.id, displayName: reading.name, host: reading.host, sourceTier: reading.tier as "authority" | "regional_pool", region: reading.region ?? null, enabled: true }))).onDuplicateKeyUpdate({ set: { updatedAt: new Date(), enabled: true } });
   await db.insert(ntpHealthSnapshots).values(persistent.map(reading => ({ authority: reading.id, host: reading.host, sourceTier: reading.tier as "authority" | "regional_pool", region: reading.region ?? null, status: (reading.status === "reachable" ? "reachable" : "unreachable") as "reachable" | "unreachable", detail: reading.detail ?? null, offsetMs: reading.offsetMs, delayMs: reading.delayMs, uncertaintyMs: reading.uncertaintyMs, sampledAtMs: reading.sampledAt })));
   return true;
+}
+
+export type ChronoPreferences = { alertEnabled: boolean; alertThresholdMs: number; hardwareTemplateOptIn: boolean; hardwareTags: string[]; hardwareDescription: string | null; worldZones: string[] };
+const defaultChronoPreferences: ChronoPreferences = { alertEnabled: true, alertThresholdMs: 25, hardwareTemplateOptIn: false, hardwareTags: [], hardwareDescription: null, worldZones: ["UTC", "America/Los_Angeles", "America/New_York", "Europe/London", "Asia/Kolkata", "Asia/Tokyo"] };
+function parseStringArray(value: string, maxLength: number) { try { const parsed: unknown = JSON.parse(value); return Array.isArray(parsed) ? parsed.filter(item => typeof item === "string").slice(0, maxLength) : []; } catch { return []; } }
+
+export async function getChronoPreferences(userId: number): Promise<ChronoPreferences> {
+  const db = await getDb(); if (!db) return defaultChronoPreferences;
+  const stored = (await db.select().from(userChronoPreferences).where(eq(userChronoPreferences.userId, userId)).limit(1))[0];
+  if (!stored) return defaultChronoPreferences;
+  return { alertEnabled: stored.alertEnabled, alertThresholdMs: stored.alertThresholdMs, hardwareTemplateOptIn: stored.hardwareTemplateOptIn, hardwareTags: parseStringArray(stored.hardwareTagsJson, 5), hardwareDescription: stored.hardwareDescription, worldZones: parseStringArray(stored.worldZonesJson, 24).length ? parseStringArray(stored.worldZonesJson, 24) : defaultChronoPreferences.worldZones };
+}
+
+export async function saveChronoPreferences(userId: number, preferences: ChronoPreferences) {
+  const db = await getDb(); if (!db) return false;
+  const values = { userId, alertEnabled: preferences.alertEnabled, alertThresholdMs: preferences.alertThresholdMs, hardwareTemplateOptIn: preferences.hardwareTemplateOptIn, hardwareTagsJson: JSON.stringify(preferences.hardwareTags), hardwareDescription: preferences.hardwareDescription, worldZonesJson: JSON.stringify(preferences.worldZones) };
+  await db.insert(userChronoPreferences).values(values).onDuplicateKeyUpdate({ set: { ...values, updatedAt: new Date() } });
+  return true;
+}
+
+export async function getSourceAccuracyAnalytics(range: SourceAccuracyRange) {
+  const db = await getDb(); const generatedAt = Date.now();
+  if (!db) return { range, generatedAt, sources: [], timeline: [] };
+  const [sources, snapshots] = await Promise.all([
+    db.select().from(timeSources).limit(200),
+    db.select().from(ntpHealthSnapshots).where(gte(ntpHealthSnapshots.sampledAtMs, getSourceRangeStart(range, generatedAt))).orderBy(desc(ntpHealthSnapshots.sampledAtMs)).limit(20_000),
+  ]);
+  const names = new Map(sources.map(source => [source.id, source.displayName]));
+  return { range, generatedAt, ...aggregateSourceAccuracy(snapshots.map(snapshot => ({ authority: snapshot.authority, status: snapshot.status, offsetMs: snapshot.offsetMs, uncertaintyMs: snapshot.uncertaintyMs, sampledAtMs: snapshot.sampledAtMs })), names, range) };
+}
+
+export type RoomRelayEventInput = { originId: string; roomCode: string; eventType: "upsert" | "remove"; peerId: string; payload: unknown | null };
+export type RoomRelayEvent = RoomRelayEventInput & { id: number; expiresAtMs: number };
+export async function appendRoomRelayEvent(event: RoomRelayEventInput) {
+  const db = await getDb(); if (!db) return false;
+  await db.insert(roomRelayEvents).values({ ...event, payloadJson: event.payload === null ? null : JSON.stringify(event.payload), expiresAtMs: Date.now() + 120_000 });
+  return true;
+}
+
+export async function getRoomRelayEvents(roomCode: string, afterId: number, originId: string): Promise<{ events: RoomRelayEvent[]; cursor: number }> {
+  const db = await getDb(); if (!db) return { events: [], cursor: afterId };
+  const events = await db.select().from(roomRelayEvents).where(and(eq(roomRelayEvents.roomCode, roomCode), gt(roomRelayEvents.id, afterId), gt(roomRelayEvents.expiresAtMs, Date.now()))).orderBy(roomRelayEvents.id).limit(100);
+  return { cursor: events.length ? events[events.length - 1].id : afterId, events: events.filter(event => event.originId !== originId).flatMap(event => {
+    try { return [{ id: event.id, originId: event.originId, roomCode: event.roomCode, eventType: event.eventType, peerId: event.peerId, payload: event.payloadJson ? JSON.parse(event.payloadJson) : null, expiresAtMs: event.expiresAtMs }]; } catch { return []; }
+  }) };
 }
