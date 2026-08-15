@@ -2,7 +2,7 @@ import { COOKIE_NAME } from "@shared/const";
 import { z } from "zod";
 import { normalizeChronoPreferences } from "../shared/chronoProfile";
 import { calculateProbe, estimateTimeSync, validateRoomCode } from "../shared/timeMath";
-import { getChronoPreferences, getMeasurementHistory, getPublicStabilityLeaderboard, getSourceAccuracyAnalytics, publishPublicStabilityEntry, saveChronoPreferences, storeMeasurementBurst, storeNtpHealthSnapshots } from "./db";
+import { getChronoPreferences, getMeasurementHistory, getPublicStabilityLeaderboard, getPublicStabilityTags, getSourceAccuracyAnalytics, publishPublicStabilityEntry, saveChronoPreferences, storeMeasurementBurst, storeNtpHealthSnapshots } from "./db";
 import { getSourceHistoryInsight } from "./sourceInsight";
 import { getControlledTimeSourceHealth, getUpstreamNtpHealth, queryCustomNtpHost } from "./ntp";
 import { getChronoMeshRealtimeDiagnostics } from "./realtime";
@@ -57,7 +57,8 @@ export const appRouter = router({
     }),
     sourceAnalytics: publicProcedure.input(z.object({ range: z.enum(["24h", "7d", "30d"]).default("24h") })).query(({ input }) => getSourceAccuracyAnalytics(input.range)),
     sourceHistoryInsight: publicProcedure.input(z.object({ range: z.enum(["24h", "7d", "30d"]).default("24h") })).query(({ input }) => getSourceHistoryInsight(input.range)),
-    publicStabilityLeaderboard: publicProcedure.query(() => getPublicStabilityLeaderboard()),
+    publicStabilityLeaderboard: publicProcedure.input(z.object({ tag: z.string().trim().max(24).optional(), limit: z.number().int().min(1).max(100).default(100) }).optional()).query(({ input }) => getPublicStabilityLeaderboard(input?.tag, input?.limit ?? 100)),
+    publicStabilityTags: publicProcedure.query(() => getPublicStabilityTags()),
     publishPublicStability: protectedProcedure.input(z.object({ offsetMs: z.number().finite().min(-86_400_000).max(86_400_000), jitterMs: z.number().finite().min(0), uncertaintyMs: z.number().finite().min(0), sampleCount: z.number().int().min(1).max(1_000) })).mutation(({ ctx, input }) => publishPublicStabilityEntry(ctx.user.id, input)),
     realtimeDiagnostics: publicProcedure.query(() => getChronoMeshRealtimeDiagnostics()),
     probeCustomSource: publicProcedure.input(z.object({ sessionId: z.string().min(8).max(64), host: z.string().min(1).max(253) })).mutation(async ({ ctx, input }) => {

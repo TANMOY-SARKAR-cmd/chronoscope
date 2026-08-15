@@ -58,4 +58,13 @@
 - [x] Add automated coverage for AI insight cache reuse, expiry, and invalidation behavior.
 - [x] Add direct cache behavior tests covering reuse before TTL expiry, expiry refresh, and data-signature invalidation.
 - [x] Audit high-contrast focus-ring and alert-state readability with documented keyboard and contrast verification.
-- [ ] Save the ChronoMesh insight release checkpoint and provide the version for review.
+- [x] Save the ChronoMesh insight release checkpoint and provide the version for review.
+- [x] Define a privacy-safe live comparison chart contract using the local offset and public aggregate leaderboard traces only.
+- [x] Add typed leaderboard tag-filter querying and an API that returns only consented public setup aggregates.
+- [x] Add CSV export rows for grounded AI jitter insight, evidence, and limitations with spreadsheet-safe escaping.
+- [x] Build a realtime peer comparison chart that overlays the current local offset against anonymized public leader aggregates.
+- [x] Build public leaderboard hardware-tag filter controls with empty, loading, and no-match states.
+- [x] Build an AI insight export action integrated with the existing synchronization CSV download.
+- [x] Add tests for public aggregation privacy, tag filtering, chart shaping, and insight CSV escaping.
+- [x] Run type checks, test suite, and desktop/mobile visual verification for the comparison release.
+- [ ] Save the ChronoMesh comparison release checkpoint and provide the version for review.

@@ -5,6 +5,7 @@ import { ENV } from "./_core/env";
 import { calculateStabilityScore, type SyncEstimate } from "../shared/timeMath";
 import type { TimeSource, UpstreamHealth } from "./ntp";
 import { aggregateSourceAccuracy, getSourceRangeStart, type SourceAccuracyRange } from "../shared/sourceAnalytics";
+import { filterPublicSetupsByTag, normalizeLeaderboardTagFilter } from "../shared/peerComparison";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 export async function getDb() {
@@ -76,10 +77,15 @@ export async function publishPublicStabilityEntry(userId: number, input: { offse
   return true;
 }
 
-export async function getPublicStabilityLeaderboard(limit = 100) {
+export async function getPublicStabilityLeaderboard(tag?: string | null, limit = 100) {
   const db = await getDb(); if (!db) return [];
   const entries = await db.select({ setupLabel: publicStabilityEntries.setupLabel, hardwareTagsJson: publicStabilityEntries.hardwareTagsJson, stabilityScore: publicStabilityEntries.stabilityScore, offsetMs: publicStabilityEntries.offsetMs, jitterMs: publicStabilityEntries.jitterMs, uncertaintyMs: publicStabilityEntries.uncertaintyMs, sampleCount: publicStabilityEntries.sampleCount, updatedAt: publicStabilityEntries.updatedAt }).from(publicStabilityEntries).orderBy(desc(publicStabilityEntries.stabilityScore), desc(publicStabilityEntries.updatedAt)).limit(Math.min(Math.max(1, limit), 100));
-  return entries.map(entry => ({ ...entry, hardwareTags: parseStringArray(entry.hardwareTagsJson, 5) }));
+  return filterPublicSetupsByTag(entries.map(entry => ({ ...entry, hardwareTags: parseStringArray(entry.hardwareTagsJson, 5) })), normalizeLeaderboardTagFilter(tag));
+}
+
+export async function getPublicStabilityTags() {
+  const entries = await getPublicStabilityLeaderboard(null, 100);
+  return Array.from(new Set(entries.flatMap(entry => entry.hardwareTags))).sort((a, b) => a.localeCompare(b));
 }
 
 export async function getSourceAccuracyAnalytics(range: SourceAccuracyRange) {
