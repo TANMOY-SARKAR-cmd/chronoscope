@@ -26,7 +26,7 @@ The existing dashboard does not receive a standalone corrected-time API object. 
 
 | Crown input field | Current source and derivation | Fallback / privacy boundary |
 | --- | --- | --- |
-| `correctedUtcMs` | `clockEpoch + correctedOffset`, where `correctedOffset` is the local `estimate.offsetMs` plus the median offset in `upstreamHealth.readings`. | A local in-memory presentation value; no peer or source identifier is included. |
+| `correctedUtcMs` | `clockEpoch`, which is updated from the high-resolution browser clock plus `correctedOffset`; `correctedOffset` is the local `estimate.offsetMs` plus the median offset in `upstreamHealth.readings`. | A local in-memory presentation value; no peer or source identifier is included. |
 | `uncertaintyMs` | `totalUncertainty`, the local `estimate.uncertaintyMs` plus median authority uncertainty. | May be non-finite before a successful local burst; presentation must state that no current estimate is available. |
 | `ageMs` / `freshnessState` | Derived locally from sync activity and the timestamp of the last successful local estimate; Phase 1 may add only this local presentation timestamp. | `loading`, `live`, `stale`, and `error` are presentation states, not new measurement states. |
 | `lastKnownGoodUtcMs` | The last locally rendered corrected UTC value after a successful estimate. | Used only during stale/error display and never described as current. |

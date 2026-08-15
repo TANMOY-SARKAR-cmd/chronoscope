@@ -63,6 +63,10 @@ button:active { transform: scale(.97); }
 
 @media (prefers-reduced-motion: no-preference) { .live-dot { animation: chronomesh-pulse 1.6s ease-in-out infinite; } }
 @keyframes chronomesh-pulse { 50% { opacity: .32; transform: scale(.7); } }
+
+/* The product shell keeps the crown constant while named section URLs expose only their focused workflow. */
+.section-route-sync > *, .section-route-peers > *, .section-route-sources > *, .section-route-observability > *, .section-route-contribute > *, .section-route-mesh > * { display: none; }
+.section-route-sync > #sync, .section-route-peers > #peers, .section-route-sources > #sources { display: block; }
 @import "tw-animate-css";
 
 @custom-variant dark (&:is(.dark *));

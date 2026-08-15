@@ -5,9 +5,14 @@ import { lazy, Suspense } from "react";
 import { Route, Switch } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
-import Home from "./pages/Home";
 const Leaderboard = lazy(() => import("./pages/Leaderboard"));
 const SourceReview = lazy(() => import("./pages/SourceReview"));
+const SyncView = lazy(() => import("./pages/sections/SyncView"));
+const PeersView = lazy(() => import("./pages/sections/PeersView"));
+const ObservabilityView = lazy(() => import("./pages/sections/ObservabilityView"));
+const SourceMeshView = lazy(() => import("./pages/sections/SourceMeshView"));
+const SourcesView = lazy(() => import("./pages/sections/SourcesView"));
+const ContributeView = lazy(() => import("./pages/sections/ContributeView"));
 
 function RouteLoading() {
   return <main className="grid min-h-screen place-items-center bg-[#090a0a] px-5 text-[#e4e4e7]"><div className="border border-[#a3e635]/25 bg-black/25 px-4 py-3 text-center"><div className="numeric text-[10px] tracking-[.16em] text-[#a3e635]">LOADING CHRONOMESH MODULE</div><div className="mt-1 text-xs text-[#71717a]">The requested dashboard view is being prepared.</div></div></main>;
@@ -17,7 +22,13 @@ function Router() {
   // make sure to consider if you need authentication for certain routes
   return (
     <Switch>
-      <Route path={"/"} component={Home} />
+      <Route path={"/"} component={SyncView} />
+      <Route path={"/sync"} component={SyncView} />
+      <Route path={"/peers"} component={PeersView} />
+      <Route path={"/observability"} component={ObservabilityView} />
+      <Route path={"/mesh"} component={SourceMeshView} />
+      <Route path={"/sources"} component={SourcesView} />
+      <Route path={"/contribute"} component={ContributeView} />
       <Route path={"/leaderboard"} component={Leaderboard} />
       <Route path={"/source-review"} component={SourceReview} />
       <Route path={"/404"} component={NotFound} />
