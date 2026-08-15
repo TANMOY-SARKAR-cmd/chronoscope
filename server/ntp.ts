@@ -138,3 +138,20 @@ export async function queryCustomNtpHost(hostInput: string): Promise<UpstreamHea
   if (!validation.valid) return unavailable({ id: "custom", name: "Custom host", host: hostInput.trim(), tier: "custom" }, "blocked", validation.reason);
   return queryTimeSource({ id: `custom-${validation.host}`, name: "Custom host", host: validation.host, tier: "custom" });
 }
+
+/** Probes only an already-registered source selected by the bounded mesh cohort. */
+export async function queryRegisteredNtpSource(source: { id: string; displayName: string; host: string; region: string | null }): Promise<UpstreamHealth> {
+  return queryTimeSource({ id: source.id, name: source.displayName, host: source.host, tier: "custom", region: source.region ?? undefined });
+}
+
+/** Confirms that a community operator controls the source hostname before activation. */
+export async function verifyNtpDnsOwnership(host: string, token: string): Promise<boolean> {
+  const validation = validateNtpHostname(host);
+  if (!validation.valid || !/^[a-f0-9]{24,96}$/i.test(token)) return false;
+  try {
+    const records = await dns.resolveTxt(`_chronomesh.${validation.host}`);
+    return records.some(parts => parts.join("").trim() === `chronomesh-verify=${token}`);
+  } catch {
+    return false;
+  }
+}

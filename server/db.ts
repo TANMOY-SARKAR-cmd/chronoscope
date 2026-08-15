@@ -1,13 +1,16 @@
-import { and, desc, eq, gt, gte } from "drizzle-orm";
+import { and, desc, eq, gt, gte, inArray } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
-import { InsertUser, ntpHealthSnapshots, publicStabilityEntries, roomRelayEvents, timeMeasurements, timeSources, userChronoPreferences, users } from "../drizzle/schema";
+import { randomUUID } from "node:crypto";
+import { InsertUser, globalSourceProbeSnapshots, globalSourceQualitySummaries, globalTimeSources, ntpHealthSnapshots, publicStabilityEntries, roomRelayEvents, timeMeasurements, timeSources, userChronoPreferences, users } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 import { calculateStabilityScore, type SyncEstimate } from "../shared/timeMath";
 import type { TimeSource, UpstreamHealth } from "./ntp";
 import { aggregateSourceAccuracy, getSourceRangeStart, type SourceAccuracyRange } from "../shared/sourceAnalytics";
 import { filterPublicSetupsByTag, normalizeLeaderboardTagFilter } from "../shared/peerComparison";
+import { calculateBackoffMs, canTransitionCommunitySource, type GlobalMeshSource, type MeshProbeReading } from "../shared/globalMesh";
 
 let _db: ReturnType<typeof drizzle> | null = null;
+export function __setDbForTests(db: ReturnType<typeof drizzle> | null) { _db = db; }
 export async function getDb() {
   if (!_db && process.env.DATABASE_URL) { try { _db = drizzle(process.env.DATABASE_URL); } catch (error) { console.warn("[Database] Failed to connect:", error); _db = null; } }
   return _db;
@@ -113,4 +116,90 @@ export async function getRoomRelayEvents(roomCode: string, afterId: number, orig
   return { cursor: events.length ? events[events.length - 1].id : afterId, events: events.filter(event => event.originId !== originId).flatMap(event => {
     try { return [{ id: event.id, originId: event.originId, roomCode: event.roomCode, eventType: event.eventType, peerId: event.peerId, payload: event.payloadJson ? JSON.parse(event.payloadJson) : null, expiresAtMs: event.expiresAtMs }]; } catch { return []; }
   }) };
+}
+
+type CommunitySourceInput = { host: string; displayName: string; publicMetadataOptIn: boolean; publicLabel: string | null; region: string | null };
+function sourceGroupKey(host: string) { const labels = host.split("."); return `domain:${labels.slice(-2).join(".")}`; }
+function mapGlobalSource(row: typeof globalTimeSources.$inferSelect): GlobalMeshSource {
+  return { id: row.id, displayName: row.displayName, host: row.host, sourceClass: row.sourceClass, state: row.state, provenance: row.provenance, verificationMethod: row.verificationMethod, publicMetadataOptIn: row.publicMetadataOptIn, publicLabel: row.publicLabel, region: row.region, groupKey: row.groupKey, lastProbeAtMs: row.lastProbeAtMs, consecutiveFailures: row.consecutiveFailures, nextEligibleAtMs: row.nextEligibleAtMs };
+}
+
+export async function seedGlobalMeshSources(sources: Array<{ id: string; name: string; host: string; tier: string; region?: string }>) {
+  const db = await getDb(); if (!db || !sources.length) return false;
+  await db.insert(globalTimeSources).values(sources.map(source => ({ id: source.id, displayName: source.name, host: source.host, sourceClass: source.tier === "regional_pool" ? "regional_pool" as const : "authority" as const, state: "active" as const, provenance: "curated" as const, verificationMethod: "none" as const, publicMetadataOptIn: true, publicLabel: source.name, region: source.region ?? null, groupKey: `curated:${source.id}`, consecutiveFailures: 0 }))).onDuplicateKeyUpdate({ set: { updatedAt: new Date(), state: "active", provenance: "curated", publicMetadataOptIn: true } });
+  return true;
+}
+
+export async function getGlobalMeshSources(ownerUserId?: number) {
+  const db = await getDb(); if (!db) return [] as GlobalMeshSource[];
+  const rows = ownerUserId === undefined ? await db.select().from(globalTimeSources).orderBy(globalTimeSources.sourceClass, globalTimeSources.displayName).limit(400) : await db.select().from(globalTimeSources).where(and(eq(globalTimeSources.ownerUserId, ownerUserId), eq(globalTimeSources.sourceClass, "community"))).orderBy(globalTimeSources.createdAt).limit(100);
+  return rows.map(mapGlobalSource);
+}
+
+export async function createCommunitySource(ownerUserId: number, input: CommunitySourceInput) {
+  const db = await getDb(); if (!db) return { stored: false as const, source: null, verificationToken: null };
+  const existing = (await db.select().from(globalTimeSources).where(eq(globalTimeSources.host, input.host)).limit(1))[0];
+  if (existing) throw new Error("This hostname is already registered in the source mesh.");
+  const id = `community-${randomUUID().replace(/-/g, "").slice(0, 24)}`;
+  const verificationToken = randomUUID().replace(/-/g, "");
+  await db.insert(globalTimeSources).values({ id, ownerUserId, displayName: input.displayName, host: input.host, sourceClass: "community", state: "pending", provenance: "operator_declared", verificationMethod: "dns_txt", verificationToken, publicMetadataOptIn: input.publicMetadataOptIn, publicLabel: input.publicMetadataOptIn ? input.publicLabel : null, region: input.region, groupKey: sourceGroupKey(input.host), consecutiveFailures: 0 });
+  const stored = (await db.select().from(globalTimeSources).where(eq(globalTimeSources.id, id)).limit(1))[0];
+  return { stored: true as const, source: stored ? mapGlobalSource(stored) : null, verificationToken };
+}
+
+export async function setCommunitySourceState(ownerUserId: number, sourceId: string, state: "paused" | "withdrawn") {
+  const db = await getDb(); if (!db) return false;
+  const current = await db.select({ state: globalTimeSources.state }).from(globalTimeSources).where(and(eq(globalTimeSources.id, sourceId), eq(globalTimeSources.ownerUserId, ownerUserId), eq(globalTimeSources.sourceClass, "community"))).limit(1);
+  if (!current[0] || !canTransitionCommunitySource(current[0].state, state)) return false;
+  const result = await db.update(globalTimeSources).set({ state, nextEligibleAtMs: null }).where(and(eq(globalTimeSources.id, sourceId), eq(globalTimeSources.ownerUserId, ownerUserId), eq(globalTimeSources.sourceClass, "community")));
+  return result[0].affectedRows > 0;
+}
+
+export async function verifyCommunitySource(ownerUserId: number, sourceId: string) {
+  const db = await getDb(); if (!db) return false;
+  const result = await db.update(globalTimeSources).set({ state: "active", provenance: "verified_operator", verifiedAt: new Date(), verificationToken: null, consecutiveFailures: 0, nextEligibleAtMs: null }).where(and(eq(globalTimeSources.id, sourceId), eq(globalTimeSources.ownerUserId, ownerUserId), eq(globalTimeSources.sourceClass, "community"), eq(globalTimeSources.state, "pending")));
+  return result[0].affectedRows > 0;
+}
+
+export async function getCommunitySourceVerification(ownerUserId: number, sourceId: string) {
+  const db = await getDb(); if (!db) return null;
+  const source = (await db.select({ host: globalTimeSources.host, verificationToken: globalTimeSources.verificationToken, state: globalTimeSources.state }).from(globalTimeSources).where(and(eq(globalTimeSources.id, sourceId), eq(globalTimeSources.ownerUserId, ownerUserId), eq(globalTimeSources.sourceClass, "community"))).limit(1))[0];
+  return source ?? null;
+}
+
+export async function storeGlobalMeshProbeReadings(readings: MeshProbeReading[]) {
+  const db = await getDb(); if (!db || !readings.length) return false;
+  await db.insert(globalSourceProbeSnapshots).values(readings.map(reading => ({ sourceId: reading.sourceId, status: reading.status, detail: reading.detail ?? null, offsetMs: reading.offsetMs, delayMs: reading.delayMs, uncertaintyMs: reading.uncertaintyMs, stratum: reading.stratum ?? null, sampledAtMs: reading.sampledAtMs })));
+  for (const reading of readings) {
+    const failed = reading.status !== "reachable";
+    const source = (await db.select().from(globalTimeSources).where(eq(globalTimeSources.id, reading.sourceId)).limit(1))[0];
+    if (!source) continue;
+    const failures = failed ? source.consecutiveFailures + 1 : 0;
+    await db.update(globalTimeSources).set({ lastProbeAtMs: reading.sampledAtMs, consecutiveFailures: failures, nextEligibleAtMs: failed ? reading.sampledAtMs + calculateBackoffMs(failures) : null }).where(eq(globalTimeSources.id, reading.sourceId));
+    const probeHistory = await db.select().from(globalSourceProbeSnapshots).where(eq(globalSourceProbeSnapshots.sourceId, reading.sourceId)).orderBy(desc(globalSourceProbeSnapshots.sampledAtMs)).limit(120);
+    const reachable = probeHistory.filter(item => item.status === "reachable" && item.offsetMs !== null && item.delayMs !== null && item.uncertaintyMs !== null);
+    const medianValue = (values: number[]) => { const sorted = [...values].sort((a, b) => a - b); const middle = Math.floor(sorted.length / 2); return sorted.length ? (sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2) : null; };
+    await db.insert(globalSourceQualitySummaries).values({ sourceId: reading.sourceId, reachableSamples: reachable.length, totalSamples: probeHistory.length, medianOffsetMs: medianValue(reachable.map(item => item.offsetMs!)), medianUncertaintyMs: medianValue(reachable.map(item => item.uncertaintyMs!)), medianDelayMs: medianValue(reachable.map(item => item.delayMs!)) }).onDuplicateKeyUpdate({ set: { reachableSamples: reachable.length, totalSamples: probeHistory.length, medianOffsetMs: medianValue(reachable.map(item => item.offsetMs!)), medianUncertaintyMs: medianValue(reachable.map(item => item.uncertaintyMs!)), medianDelayMs: medianValue(reachable.map(item => item.delayMs!)), updatedAt: new Date() } });
+  }
+  return true;
+}
+
+export async function getGlobalMeshQualitySummaries(sourceIds: string[]) {
+  const db = await getDb(); if (!db || !sourceIds.length) return new Map<string, { reachableSamples: number; totalSamples: number; medianOffsetMs: number | null; medianUncertaintyMs: number | null; medianDelayMs: number | null }>();
+  const summaries = await db.select().from(globalSourceQualitySummaries).where(inArray(globalSourceQualitySummaries.sourceId, sourceIds)).limit(400);
+  return new Map(summaries.map(summary => [summary.sourceId, { reachableSamples: summary.reachableSamples, totalSamples: summary.totalSamples, medianOffsetMs: summary.medianOffsetMs, medianUncertaintyMs: summary.medianUncertaintyMs, medianDelayMs: summary.medianDelayMs }]));
+}
+
+export async function getGlobalMeshLatestReadings(sourceIds: string[]) {
+  const db = await getDb(); if (!db || !sourceIds.length) return [] as MeshProbeReading[];
+  const snapshots = await db.select().from(globalSourceProbeSnapshots).where(inArray(globalSourceProbeSnapshots.sourceId, sourceIds)).orderBy(desc(globalSourceProbeSnapshots.sampledAtMs)).limit(Math.min(2_000, sourceIds.length * 8));
+  const sources = await db.select().from(globalTimeSources).where(inArray(globalTimeSources.id, sourceIds)).limit(400);
+  const sourceById = new Map(sources.map(source => [source.id, source])); const seen = new Set<string>();
+  return snapshots.flatMap(snapshot => { if (seen.has(snapshot.sourceId)) return []; seen.add(snapshot.sourceId); const source = sourceById.get(snapshot.sourceId); if (!source) return []; return [{ sourceId: snapshot.sourceId, sourceClass: source.sourceClass, groupKey: source.groupKey, status: snapshot.status, detail: snapshot.detail, offsetMs: snapshot.offsetMs, delayMs: snapshot.delayMs, uncertaintyMs: snapshot.uncertaintyMs, stratum: snapshot.stratum, sampledAtMs: snapshot.sampledAtMs } satisfies MeshProbeReading]; });
+}
+
+export async function getPublicGlobalMeshRegistry(limit = 200) {
+  const db = await getDb(); if (!db) return [] as Array<Pick<GlobalMeshSource, "id" | "displayName" | "sourceClass" | "state" | "provenance" | "publicMetadataOptIn" | "publicLabel" | "region">>;
+  const sources = await db.select().from(globalTimeSources).where(and(eq(globalTimeSources.state, "active"), eq(globalTimeSources.publicMetadataOptIn, true))).orderBy(globalTimeSources.sourceClass, globalTimeSources.displayName).limit(Math.min(Math.max(1, limit), 200));
+  return sources.map(source => ({ ...mapGlobalSource(source), host: undefined, groupKey: undefined, lastProbeAtMs: undefined, consecutiveFailures: undefined, nextEligibleAtMs: undefined }));
 }

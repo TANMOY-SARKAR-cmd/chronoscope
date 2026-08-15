@@ -87,4 +87,13 @@
 - [x] Wire the reduced-motion-aware chart transition helper and media-preference state into the active live comparison chart.
 - [x] Re-run automated validation after the reduced-motion chart wiring and verify the active chart code path.
 - [x] Run and confirm automated tooltip-output and chart-series transition tests, then rerun the full suite and type check.
-- [ ] Save the ChronoMesh authority-chart release checkpoint and provide the version for review.
+- [x] Save the ChronoMesh authority-chart release checkpoint and provide the version for review.
+- [x] Define bounded opt-in global source registry contracts, source quality states, and conservative consensus outputs.
+- [x] Complete source-registry quality-summary persistence and show the compact quality state without exposing private metadata.
+- [x] Extend safe NTP probing with source cohorts, per-source backoff, and quota-aware selection.
+- [x] Implement robust, diversity-aware multi-source time fusion with uncertainty expansion and reason-coded exclusions.
+- [x] Add authenticated community source registration, pause, and removal controls with secure ownership-verification flow.
+- [x] Add source-mesh summary APIs and realtime-safe aggregate telemetry.
+- [x] Add Global Source Mesh class, state, and region visibility filters to the public source list.
+- [x] Add source lifecycle and persisted-backoff tests alongside the existing fusion and privacy coverage.
+- [x] Save and verify the global-source-mesh release checkpoint after completing final validation.

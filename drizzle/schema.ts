@@ -101,3 +101,51 @@ export const roomRelayEvents = mysqlTable("room_relay_events", {
   expiresAtMs: double("expiresAtMs").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 }, table => [index("room_relay_room_id_idx").on(table.roomCode, table.id), index("room_relay_expiry_idx").on(table.expiresAtMs)]);
+
+/** Opt-in global source catalog. Public metadata is distinct from operator ownership data. */
+export const globalTimeSources = mysqlTable("global_time_sources", {
+  id: varchar("id", { length: 64 }).primaryKey(),
+  ownerUserId: int("ownerUserId"),
+  displayName: varchar("displayName", { length: 80 }).notNull(),
+  host: varchar("host", { length: 253 }).notNull().unique(),
+  sourceClass: mysqlEnum("sourceClass", ["authority", "regional_pool", "official", "community"]).notNull(),
+  state: mysqlEnum("state", ["pending", "active", "paused", "quarantined", "withdrawn"]).default("pending").notNull(),
+  provenance: mysqlEnum("provenance", ["curated", "verified_operator", "operator_declared"]).default("operator_declared").notNull(),
+  verificationMethod: mysqlEnum("verificationMethod", ["none", "dns_txt", "https_token"]).default("none").notNull(),
+  verificationToken: varchar("verificationToken", { length: 96 }),
+  verifiedAt: timestamp("verifiedAt"),
+  publicMetadataOptIn: boolean("publicMetadataOptIn").default(false).notNull(),
+  publicLabel: varchar("publicLabel", { length: 48 }),
+  region: varchar("region", { length: 48 }),
+  groupKey: varchar("groupKey", { length: 96 }).notNull(),
+  consecutiveFailures: int("consecutiveFailures").default(0).notNull(),
+  nextEligibleAtMs: double("nextEligibleAtMs"),
+  lastProbeAtMs: double("lastProbeAtMs"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, table => [index("global_time_sources_state_idx").on(table.state, table.nextEligibleAtMs), index("global_time_sources_owner_idx").on(table.ownerUserId), index("global_time_sources_class_idx").on(table.sourceClass)]);
+
+/** Bounded per-source telemetry retained for quality and conservative fusion calculations. */
+export const globalSourceProbeSnapshots = mysqlTable("global_source_probe_snapshots", {
+  id: int("id").autoincrement().primaryKey(),
+  sourceId: varchar("sourceId", { length: 64 }).notNull(),
+  status: mysqlEnum("status", ["reachable", "unreachable", "blocked", "quarantined"]).notNull(),
+  detail: varchar("detail", { length: 255 }),
+  offsetMs: double("offsetMs"),
+  delayMs: double("delayMs"),
+  uncertaintyMs: double("uncertaintyMs"),
+  stratum: int("stratum"),
+  sampledAtMs: double("sampledAtMs").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, table => [index("global_probe_source_sampled_idx").on(table.sourceId, table.sampledAtMs)]);
+
+/** Compact quality data avoids exposing raw peer or contributor identifiers in public views. */
+export const globalSourceQualitySummaries = mysqlTable("global_source_quality_summaries", {
+  sourceId: varchar("sourceId", { length: 64 }).primaryKey(),
+  reachableSamples: int("reachableSamples").default(0).notNull(),
+  totalSamples: int("totalSamples").default(0).notNull(),
+  medianOffsetMs: double("medianOffsetMs"),
+  medianUncertaintyMs: double("medianUncertaintyMs"),
+  medianDelayMs: double("medianDelayMs"),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});

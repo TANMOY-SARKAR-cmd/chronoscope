@@ -2,10 +2,11 @@ import { COOKIE_NAME } from "@shared/const";
 import { z } from "zod";
 import { normalizeChronoPreferences } from "../shared/chronoProfile";
 import { calculateProbe, estimateTimeSync, validateRoomCode } from "../shared/timeMath";
-import { getChronoPreferences, getMeasurementHistory, getPublicStabilityLeaderboard, getPublicStabilityTags, getSourceAccuracyAnalytics, publishPublicStabilityEntry, saveChronoPreferences, storeMeasurementBurst, storeNtpHealthSnapshots } from "./db";
+import { createCommunitySource, getChronoPreferences, getCommunitySourceVerification, getGlobalMeshSources, getMeasurementHistory, getPublicGlobalMeshRegistry, getPublicStabilityLeaderboard, getPublicStabilityTags, getSourceAccuracyAnalytics, publishPublicStabilityEntry, saveChronoPreferences, setCommunitySourceState, storeMeasurementBurst, storeNtpHealthSnapshots, verifyCommunitySource } from "./db";
 import { getSourceHistoryInsight } from "./sourceInsight";
-import { getControlledTimeSourceHealth, getUpstreamNtpHealth, queryCustomNtpHost } from "./ntp";
+import { getControlledTimeSourceHealth, getUpstreamNtpHealth, queryCustomNtpHost, validateNtpHostname, verifyNtpDnsOwnership } from "./ntp";
 import { getChronoMeshRealtimeDiagnostics } from "./realtime";
+import { clearGlobalSourceMeshCache, getGlobalSourceMesh } from "./globalMeshService";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
@@ -45,6 +46,31 @@ export const appRouter = router({
     }),
   }),
   chronomesh: router({
+    globalMesh: publicProcedure.query(() => getGlobalSourceMesh()),
+    globalMeshRegistry: publicProcedure.input(z.object({ limit: z.number().int().min(1).max(200).default(100) }).optional()).query(({ input }) => getPublicGlobalMeshRegistry(input?.limit ?? 100)),
+    myCommunitySources: protectedProcedure.query(({ ctx }) => getGlobalMeshSources(ctx.user.id)),
+    registerCommunitySource: protectedProcedure.input(z.object({ host: z.string().min(1).max(253), displayName: z.string().trim().min(2).max(80), publicMetadataOptIn: z.boolean(), publicLabel: z.string().trim().min(2).max(48).nullable(), region: z.string().trim().min(2).max(48).nullable() })).mutation(async ({ ctx, input }) => {
+      const validated = validateNtpHostname(input.host);
+      if (!validated.valid) throw new Error(validated.reason);
+      if (input.publicMetadataOptIn && !input.publicLabel) throw new Error("Provide a public label or keep community metadata private.");
+      const result = await createCommunitySource(ctx.user.id, { ...input, host: validated.host, publicLabel: input.publicMetadataOptIn ? input.publicLabel : null });
+      clearGlobalSourceMeshCache();
+      return result;
+    }),
+    verifyCommunitySource: protectedProcedure.input(z.object({ sourceId: z.string().min(12).max(64) })).mutation(async ({ ctx, input }) => {
+      const verification = await getCommunitySourceVerification(ctx.user.id, input.sourceId);
+      if (!verification || verification.state !== "pending" || !verification.verificationToken) throw new Error("This source is not awaiting DNS verification.");
+      const verified = await verifyNtpDnsOwnership(verification.host, verification.verificationToken);
+      if (!verified) throw new Error(`Publish DNS TXT _chronomesh.${verification.host} with chronomesh-verify=<your token>, then try again.`);
+      const activated = await verifyCommunitySource(ctx.user.id, input.sourceId);
+      clearGlobalSourceMeshCache();
+      return { activated };
+    }),
+    setCommunitySourceState: protectedProcedure.input(z.object({ sourceId: z.string().min(12).max(64), state: z.enum(["paused", "withdrawn"]) })).mutation(async ({ ctx, input }) => {
+      const updated = await setCommunitySourceState(ctx.user.id, input.sourceId, input.state);
+      clearGlobalSourceMeshCache();
+      return { updated };
+    }),
     upstreamHealth: publicProcedure.query(async () => {
       const readings = await getUpstreamNtpHealth();
       try { await storeNtpHealthSnapshots(readings); } catch (error) { console.warn("[ChronoMesh] authority snapshot persistence skipped:", error); }
