@@ -74,4 +74,17 @@
 - [x] Confirm the chart-series visibility helper, state wiring, and responsive controls in the final rendered code.
 - [x] Run the complete test suite, type check, and desktop/mobile visual verification for the chart-toggle update.
 - [x] Run type checks, tests, and desktop/mobile visual verification for the chart-toggle update.
-- [ ] Save the ChronoMesh chart-toggle release checkpoint and provide the version for review.
+- [x] Save the ChronoMesh chart-toggle release checkpoint and provide the version for review.
+- [x] Provide the saved ChronoMesh chart-toggle checkpoint version to the user for review.
+- [x] Define privacy-safe timestamp tooltip data, including local offset, consented public setup labels/tags, uncertainty, and authority telemetry semantics.
+- [x] Add a bounded realtime authority telemetry history contract for Cloudflare, Google, NIST, and NTP Pool offsets, uncertainty, and delay.
+- [x] Build a live authority comparison chart that clearly distinguishes clock offset from measured network delay and uncertainty.
+- [x] Build rich chart tooltips that show exact values and only consented public hardware tags at the hovered timestamp.
+- [x] Add smooth, reduced-motion-aware series enter/exit behavior for visibility toggles.
+- [x] Add tests for authority chart shaping, tooltip privacy, animation-state behavior, and timing semantics.
+- [x] Run type checks, tests, and desktop/mobile visual verification for the authority-chart release.
+- [x] Wire the privacy-safe tooltip-output helper into the live comparison chart and verify only consented public tags render.
+- [x] Wire the reduced-motion-aware chart transition helper and media-preference state into the active live comparison chart.
+- [x] Re-run automated validation after the reduced-motion chart wiring and verify the active chart code path.
+- [x] Run and confirm automated tooltip-output and chart-series transition tests, then rerun the full suite and type check.
+- [ ] Save the ChronoMesh authority-chart release checkpoint and provide the version for review.

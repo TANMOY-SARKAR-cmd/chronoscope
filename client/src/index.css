@@ -55,6 +55,8 @@ body {
 .chronomesh-high-contrast [class*="text-red-300"], .chronomesh-high-contrast [class*="text-red-200"] { color: #fff !important; }
 .chronomesh-high-contrast [class*="text-amber-300"] { color: #ffef5c !important; }
 .chronomesh-high-contrast [class*="from-[#291211]"], .chronomesh-high-contrast [class*="from-[#261f0f]"] { background: #000 !important; border-color: #fff !important; }
+.chart-series-line path { transition: stroke-opacity var(--chronomesh-chart-transition-ms, 220ms) cubic-bezier(0.23, 1, 0.32, 1), stroke-width var(--chronomesh-chart-transition-ms, 220ms) cubic-bezier(0.23, 1, 0.32, 1); }
+@media (prefers-reduced-motion: reduce) { .chart-series-line path { transition: none !important; } }
 
 button { transition: transform 160ms cubic-bezier(0.23, 1, 0.32, 1), background-color 160ms cubic-bezier(0.23, 1, 0.32, 1), border-color 160ms cubic-bezier(0.23, 1, 0.32, 1); }
 button:active { transform: scale(.97); }
