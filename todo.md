@@ -128,3 +128,15 @@
 - [x] Repair the development preview entry-module routing so Vite serves the dashboard rather than the SPA fallback.
 - [x] Add reproducible tests for pnpm override/patch configuration and lazy-loaded route wiring.
 - [x] Document the remaining production dependency-audit findings and their out-of-scope follow-up boundary for this release.
+- [x] Capture Phase 0 baseline evidence for routes, responsive rendering, bundle output, validation, and corrected-time response shape.
+- [x] Map frozen measurement contracts, consumers, and prohibited Phase 1 semantic changes in `docs/semantic-freeze.md`.
+- [x] Add or confirm contract regression coverage for local measurement, authority telemetry, anonymous rooms, fusion observability, and global mesh privacy projections.
+- [x] Define versioned editorial copy for the CorrectedTimeCrown caveat, freshness states, coverage states, and safe next actions.
+- [x] Run Phase 0 validation, make the semantic-freeze checklist green, and save the semantic-baseline checkpoint.
+- [ ] Build the Phase 1 ChronoMesh shell, CorrectedTimeCrown, lazy sectional routes, deep links, and first-class educational states without changing measurement semantics.
+- [ ] Add Phase 1 accessibility, responsive, contract, and browser-flow coverage; verify the primary first-visit success measure and save its checkpoint.
+- [ ] Add Phase 2 first-run education, root README, single-source fusion methodology, and initial agent key-lifecycle documentation.
+- [ ] Implement Phase 3 bounded scheduler readiness, dry-run safeguards, aggregate freshness, and protected anomaly signals; activate no schedule without explicit owner approval.
+- [ ] Add Phase 4 privacy-redaction browser coverage, production-safe authenticated fixtures, CI quality gates, and reproducible agent-release assurance.
+- [x] Record the exact CorrectedTimeCrown input shape and its source queries in the versioned Phase 0 baseline.
+- [x] Add explicit Phase 0 assertions for authority telemetry semantics, anonymous-room validation/privacy, aggregate-only fusion output, and global-mesh public projections.
