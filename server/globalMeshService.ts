@@ -1,4 +1,4 @@
-import { getGlobalMeshLatestReadings, getGlobalMeshQualitySummaries, getGlobalMeshSources, seedGlobalMeshSources, storeGlobalMeshProbeReadings } from "./db";
+import { getGlobalMeshLatestReadings, getGlobalMeshQualitySummaries, getGlobalMeshSources, getSourceAttestationStatus, seedGlobalMeshSources, storeGlobalMeshProbeReadings } from "./db";
 import { CONTROLLED_TIME_SOURCES, queryRegisteredNtpSource } from "./ntp";
 import { fuseGlobalTime, selectProbeCohort, type MeshConsensus, type MeshProbeReading } from "../shared/globalMesh";
 
@@ -7,7 +7,7 @@ export type GlobalSourceMeshResult = {
   generatedAt: number;
   consensus: MeshConsensus;
   sourceCounts: { configured: number; active: number; pending: number; paused: number; quarantined: number };
-  sources: Array<{ id: string; displayName: string; sourceClass: string; state: string; provenance: string; publicLabel: string | null; region: string | null; lastProbeAtMs: number | null; quality: { reachableSamples: number; totalSamples: number; medianUncertaintyMs: number | null; medianDelayMs: number | null } | null }>;
+  sources: Array<{ id: string; displayName: string; sourceClass: string; state: string; provenance: string; publicLabel: string | null; region: string | null; lastProbeAtMs: number | null; quality: { reachableSamples: number; totalSamples: number; medianUncertaintyMs: number | null; medianDelayMs: number | null } | null; attestation: { fresh: boolean; qualityBand: string | null; lastAttestedAtMs: number | null } | null }>;
   readings: MeshProbeReading[];
 };
 let cached: { value: GlobalSourceMeshResult; expiresAt: number } | null = null;
@@ -28,7 +28,8 @@ export async function getGlobalSourceMesh(force = false): Promise<GlobalSourceMe
   if (readings.length) await storeGlobalMeshProbeReadings(readings);
   const latestSources = await getGlobalMeshSources();
   const latestReadings = await getGlobalMeshLatestReadings(latestSources.map(source => source.id));
-  const qualityBySource = await getGlobalMeshQualitySummaries(latestSources.map(source => source.id));
+  const sourceIds = latestSources.map(source => source.id);
+  const [qualityBySource, attestationsBySource] = await Promise.all([getGlobalMeshQualitySummaries(sourceIds), getSourceAttestationStatus(sourceIds)]);
   const consensus = fuseGlobalTime(latestReadings);
   const value = {
     generatedAt: Date.now(),
@@ -40,7 +41,7 @@ export async function getGlobalSourceMesh(force = false): Promise<GlobalSourceMe
       paused: latestSources.filter(source => source.state === "paused").length,
       quarantined: latestSources.filter(source => source.state === "quarantined").length,
     },
-    sources: latestSources.map(source => { const quality = qualityBySource.get(source.id); return { id: source.id, displayName: source.publicMetadataOptIn || source.sourceClass !== "community" ? source.displayName : "Verified community source", sourceClass: source.sourceClass, state: source.state, provenance: source.provenance, publicLabel: source.publicMetadataOptIn ? source.publicLabel : null, region: source.region, lastProbeAtMs: source.lastProbeAtMs, quality: quality ? { reachableSamples: quality.reachableSamples, totalSamples: quality.totalSamples, medianUncertaintyMs: quality.medianUncertaintyMs, medianDelayMs: quality.medianDelayMs } : null }; }),
+    sources: latestSources.map(source => { const quality = qualityBySource.get(source.id); const attestation = attestationsBySource.get(source.id); const isPublicCommunity = source.sourceClass !== "community" || source.publicMetadataOptIn; return { id: source.id, displayName: isPublicCommunity ? source.displayName : "Verified community source", sourceClass: source.sourceClass, state: source.state, provenance: source.provenance, publicLabel: source.publicMetadataOptIn ? source.publicLabel : null, region: source.region, lastProbeAtMs: source.lastProbeAtMs, quality: quality ? { reachableSamples: quality.reachableSamples, totalSamples: quality.totalSamples, medianUncertaintyMs: quality.medianUncertaintyMs, medianDelayMs: quality.medianDelayMs } : null, attestation: attestation && isPublicCommunity ? attestation : null }; }),
     readings: latestReadings,
   };
   cached = { value, expiresAt: Date.now() + REFRESH_TTL_MS };

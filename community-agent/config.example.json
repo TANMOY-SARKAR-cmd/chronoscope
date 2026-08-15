@@ -1,0 +1,9 @@
+{
+  "apiBaseUrl": "https://YOUR-CHRONOMESH-DEPLOYMENT.example",
+  "installationId": "agent_...",
+  "enrollmentCredential": "ONE_TIME_CREDENTIAL_FROM_DASHBOARD",
+  "sourceId": "gsrc_...",
+  "sourceHost": "ntp.example.org",
+  "privateKeyPkcs8Base64": "BASE64_ED25519_PKCS8_KEY",
+  "agentVersion": "0.1.0"
+}

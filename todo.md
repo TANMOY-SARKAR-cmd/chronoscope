@@ -97,3 +97,14 @@
 - [x] Add Global Source Mesh class, state, and region visibility filters to the public source list.
 - [x] Add source lifecycle and persisted-backoff tests alongside the existing fusion and privacy coverage.
 - [x] Save and verify the global-source-mesh release checkpoint after completing final validation.
+- [x] Define shared agent attestation envelopes, privacy projections, review transitions, and diversity metadata contracts.
+- [x] Add non-destructive persistence for agent installations, single-use challenges, attestations, source applications, review events, and network metadata.
+- [x] Implement protected agent enrollment, challenge, signed attestation, revocation, source-application, and reviewer-decision APIs.
+- [x] Implement ASN and geographic diversity factors with neutral missing-data behavior and low-diversity uncertainty expansion.
+- [x] Add coherent public source overview, contributor agent controls, source status filters, and a separate reviewer queue route.
+- [x] Add versioned open-source agent protocol documentation, Linux/Windows service materials, and iOS companion specification.
+- [x] Add tests for attestation replay protection, privacy projections, review permissions, lifecycle audit events, and diversity fusion safeguards.
+- [x] Add explicit tests for reviewer-decision permission denial and authorized reviewer handling.
+- [x] Add explicit tests for auditable source-review lifecycle event writes and projections.
+- [x] Re-run the complete regression suite and type check after the final reviewer-guard and audit-event tests.
+- [x] Save and verify the community-agent trust-mesh release checkpoint for review.

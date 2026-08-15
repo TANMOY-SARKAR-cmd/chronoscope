@@ -2,7 +2,7 @@ import { COOKIE_NAME } from "@shared/const";
 import { z } from "zod";
 import { normalizeChronoPreferences } from "../shared/chronoProfile";
 import { calculateProbe, estimateTimeSync, validateRoomCode } from "../shared/timeMath";
-import { createCommunitySource, getChronoPreferences, getCommunitySourceVerification, getGlobalMeshSources, getMeasurementHistory, getPublicGlobalMeshRegistry, getPublicStabilityLeaderboard, getPublicStabilityTags, getSourceAccuracyAnalytics, publishPublicStabilityEntry, saveChronoPreferences, setCommunitySourceState, storeMeasurementBurst, storeNtpHealthSnapshots, verifyCommunitySource } from "./db";
+import { createAgentInstallation, createAttestationChallenge, createCommunitySource, decideSourceReviewApplication, getAgentInstallationByCredential, getAgentInstallations, getChronoPreferences, getCommunitySourceVerification, getGlobalMeshSources, getMeasurementHistory, getPublicGlobalMeshRegistry, getPublicSourceReviewApplications, getPublicStabilityLeaderboard, getPublicStabilityTags, getReviewerSourceApplications, getSourceAccuracyAnalytics, publishPublicStabilityEntry, revokeAgentInstallation, saveChronoPreferences, setCommunitySourceState, storeMeasurementBurst, storeNtpHealthSnapshots, upsertSourceReviewApplication, verifyCommunitySource } from "./db";
 import { getSourceHistoryInsight } from "./sourceInsight";
 import { getControlledTimeSourceHealth, getUpstreamNtpHealth, queryCustomNtpHost, validateNtpHostname, verifyNtpDnsOwnership } from "./ntp";
 import { getChronoMeshRealtimeDiagnostics } from "./realtime";
@@ -10,6 +10,8 @@ import { clearGlobalSourceMeshCache, getGlobalSourceMesh } from "./globalMeshSer
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
+import { AGENT_PLATFORMS, isValidAgentPublicKey, REVIEW_DECISIONS } from "../shared/agentTrust";
+import { submitSignedAgentAttestation } from "./agentTrustService";
 
 const customProbeWindows = new Map<string, { lastAt: number; count: number; resetAt: number }>();
 function enforceCustomProbeLimit(key: string) {
@@ -19,6 +21,7 @@ function enforceCustomProbeLimit(key: string) {
   if (current.count >= 12) throw new Error("Custom probe limit reached for this hour.");
   current.lastAt = now; current.count += 1;
 }
+export function requireSourceReviewer(user: { role: string }) { if (user.role !== "admin") throw new Error("Source review requires an administrator account."); }
 
 export const appRouter = router({
   system: systemRouter,
@@ -48,7 +51,24 @@ export const appRouter = router({
   chronomesh: router({
     globalMesh: publicProcedure.query(() => getGlobalSourceMesh()),
     globalMeshRegistry: publicProcedure.input(z.object({ limit: z.number().int().min(1).max(200).default(100) }).optional()).query(({ input }) => getPublicGlobalMeshRegistry(input?.limit ?? 100)),
+    publicSourceReviewQueue: publicProcedure.input(z.object({ limit: z.number().int().min(1).max(100).default(50) }).optional()).query(({ input }) => getPublicSourceReviewApplications(input?.limit ?? 50)),
     myCommunitySources: protectedProcedure.query(({ ctx }) => getGlobalMeshSources(ctx.user.id)),
+    myAgentInstallations: protectedProcedure.query(({ ctx }) => getAgentInstallations(ctx.user.id)),
+    enrollAgentInstallation: protectedProcedure.input(z.object({ publicKey: z.string().trim().max(96), platform: z.enum(AGENT_PLATFORMS), agentVersion: z.string().trim().min(1).max(32), coarseRegion: z.string().trim().min(2).max(48).nullable() })).mutation(async ({ ctx, input }) => {
+      if (!isValidAgentPublicKey(input.publicKey)) throw new Error("Provide a base64 Ed25519 public key.");
+      return createAgentInstallation(ctx.user.id, input);
+    }),
+    revokeAgentInstallation: protectedProcedure.input(z.object({ installationId: z.string().min(12).max(64) })).mutation(({ ctx, input }) => revokeAgentInstallation(ctx.user.id, input.installationId)),
+    requestAgentAttestationChallenge: publicProcedure.input(z.object({ installationId: z.string().min(12).max(64), enrollmentCredential: z.string().min(40).max(128), sourceId: z.string().min(12).max(64) })).mutation(async ({ input }) => {
+      const installation = await getAgentInstallationByCredential(input.installationId, input.enrollmentCredential);
+      if (!installation) throw new Error("Invalid or revoked contributor credential.");
+      return createAttestationChallenge(installation.ownerUserId, { installationId: input.installationId, sourceId: input.sourceId });
+    }),
+    submitAgentAttestation: publicProcedure.input(z.object({ installationId: z.string().min(12).max(64), enrollmentCredential: z.string().min(40).max(128), nonce: z.string().min(32).max(64), envelope: z.object({ protocolVersion: z.literal(1), challengeId: z.string().min(12).max(64), sourceId: z.string().min(12).max(64), sampledAtMs: z.number().finite(), offsetMs: z.number().finite(), delayMs: z.number().finite(), uncertaintyMs: z.number().finite(), stratum: z.number().int().min(1).max(16).nullable(), agentVersion: z.string().trim().min(1).max(32), signatureBase64: z.string().min(64).max(128) }) })).mutation(async ({ input }) => {
+      const installation = await getAgentInstallationByCredential(input.installationId, input.enrollmentCredential);
+      if (!installation) throw new Error("Invalid or revoked contributor credential.");
+      return submitSignedAgentAttestation(input.installationId, input.nonce, input.envelope);
+    }),
     registerCommunitySource: protectedProcedure.input(z.object({ host: z.string().min(1).max(253), displayName: z.string().trim().min(2).max(80), publicMetadataOptIn: z.boolean(), publicLabel: z.string().trim().min(2).max(48).nullable(), region: z.string().trim().min(2).max(48).nullable() })).mutation(async ({ ctx, input }) => {
       const validated = validateNtpHostname(input.host);
       if (!validated.valid) throw new Error(validated.reason);
@@ -70,6 +90,15 @@ export const appRouter = router({
       const updated = await setCommunitySourceState(ctx.user.id, input.sourceId, input.state);
       clearGlobalSourceMeshCache();
       return { updated };
+    }),
+    submitSourceReviewApplication: protectedProcedure.input(z.object({ sourceId: z.string().min(12).max(64), capabilities: z.array(z.string().trim().min(2).max(48)).min(1).max(8), publicQueueOptIn: z.boolean(), requestedPublicLabel: z.string().trim().min(2).max(48).nullable() })).mutation(async ({ ctx, input }) => {
+      const stored = await upsertSourceReviewApplication(ctx.user.id, input);
+      clearGlobalSourceMeshCache();
+      return { stored };
+    }),
+    reviewerSourceApplications: protectedProcedure.input(z.object({ limit: z.number().int().min(1).max(100).default(50) }).optional()).query(async ({ ctx, input }) => { requireSourceReviewer(ctx.user); return getReviewerSourceApplications(input?.limit ?? 50); }),
+    decideSourceReviewApplication: protectedProcedure.input(z.object({ sourceId: z.string().min(12).max(64), decision: z.enum(REVIEW_DECISIONS), reasonCode: z.string().trim().min(2).max(96), privateNote: z.string().trim().max(500).nullable(), publicRationale: z.string().trim().max(280).nullable() })).mutation(async ({ ctx, input }) => {
+      requireSourceReviewer(ctx.user); const updated = await decideSourceReviewApplication(ctx.user.id, input); clearGlobalSourceMeshCache(); return { updated };
     }),
     upstreamHealth: publicProcedure.query(async () => {
       const readings = await getUpstreamNtpHealth();

@@ -1,0 +1,5 @@
+config.json
+*.key
+*.pem
+*.p8
+*.log

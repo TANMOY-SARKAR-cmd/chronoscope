@@ -1,0 +1,15 @@
+[Unit]
+Description=ChronoMesh Community Agent bounded NTP attestation
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=chronomesh
+Group=chronomesh
+ExecStart=/usr/bin/node /opt/chronomesh-agent/agent.mjs attest /etc/chronomesh-agent/config.json
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/chronomesh-agent

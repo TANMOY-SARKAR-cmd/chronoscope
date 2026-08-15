@@ -1,0 +1,2 @@
+ALTER TABLE `operator_agent_installations` ADD `accessTokenHash` varchar(64) NOT NULL;--> statement-breakpoint
+ALTER TABLE `operator_agent_installations` ADD CONSTRAINT `operator_agent_installations_accessTokenHash_unique` UNIQUE(`accessTokenHash`);

@@ -1,0 +1,15 @@
+{
+  "name": "@chronomesh/community-agent",
+  "version": "0.1.0",
+  "private": false,
+  "description": "Free self-hosted signed-health reference agent for ChronoMesh community NTP operators.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "keygen": "node agent.mjs keygen",
+    "attest": "node agent.mjs attest ./config.json"
+  }
+}

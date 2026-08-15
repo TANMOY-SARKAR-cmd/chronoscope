@@ -1,13 +1,14 @@
-import { and, desc, eq, gt, gte, inArray } from "drizzle-orm";
+import { and, desc, eq, gt, gte, inArray, isNull } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
-import { randomUUID } from "node:crypto";
-import { InsertUser, globalSourceProbeSnapshots, globalSourceQualitySummaries, globalTimeSources, ntpHealthSnapshots, publicStabilityEntries, roomRelayEvents, timeMeasurements, timeSources, userChronoPreferences, users } from "../drizzle/schema";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { InsertUser, globalSourceProbeSnapshots, globalSourceQualitySummaries, globalTimeSources, ntpHealthSnapshots, operatorAgentInstallations, operatorAttestationChallenges, operatorHealthAttestations, publicStabilityEntries, roomRelayEvents, sourceNetworkMetadata, sourceReviewApplications, sourceReviewEvents, timeMeasurements, timeSources, userChronoPreferences, users } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 import { calculateStabilityScore, type SyncEstimate } from "../shared/timeMath";
 import type { TimeSource, UpstreamHealth } from "./ntp";
 import { aggregateSourceAccuracy, getSourceRangeStart, type SourceAccuracyRange } from "../shared/sourceAnalytics";
 import { filterPublicSetupsByTag, normalizeLeaderboardTagFilter } from "../shared/peerComparison";
 import { calculateBackoffMs, canTransitionCommunitySource, type GlobalMeshSource, type MeshProbeReading } from "../shared/globalMesh";
+import { ATTESTATION_CHALLENGE_TTL_MS, deriveAttestationQualityBand, isAttestationFresh, sanitizePublicRationale, sourceStateForReview, type AgentAttestationEnvelope, type AgentPlatform, type PublicSourceApplication, type SourceNetworkMetadata, type SourceReviewDecision } from "../shared/agentTrust";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 export function __setDbForTests(db: ReturnType<typeof drizzle> | null) { _db = db; }
@@ -192,14 +193,143 @@ export async function getGlobalMeshQualitySummaries(sourceIds: string[]) {
 
 export async function getGlobalMeshLatestReadings(sourceIds: string[]) {
   const db = await getDb(); if (!db || !sourceIds.length) return [] as MeshProbeReading[];
-  const snapshots = await db.select().from(globalSourceProbeSnapshots).where(inArray(globalSourceProbeSnapshots.sourceId, sourceIds)).orderBy(desc(globalSourceProbeSnapshots.sampledAtMs)).limit(Math.min(2_000, sourceIds.length * 8));
-  const sources = await db.select().from(globalTimeSources).where(inArray(globalTimeSources.id, sourceIds)).limit(400);
+  const [snapshots, sources, networkMetadata] = await Promise.all([
+    db.select().from(globalSourceProbeSnapshots).where(inArray(globalSourceProbeSnapshots.sourceId, sourceIds)).orderBy(desc(globalSourceProbeSnapshots.sampledAtMs)).limit(Math.min(2_000, sourceIds.length * 8)),
+    db.select().from(globalTimeSources).where(inArray(globalTimeSources.id, sourceIds)).limit(400),
+    getSourceNetworkMetadata(sourceIds),
+  ]);
   const sourceById = new Map(sources.map(source => [source.id, source])); const seen = new Set<string>();
-  return snapshots.flatMap(snapshot => { if (seen.has(snapshot.sourceId)) return []; seen.add(snapshot.sourceId); const source = sourceById.get(snapshot.sourceId); if (!source) return []; return [{ sourceId: snapshot.sourceId, sourceClass: source.sourceClass, groupKey: source.groupKey, status: snapshot.status, detail: snapshot.detail, offsetMs: snapshot.offsetMs, delayMs: snapshot.delayMs, uncertaintyMs: snapshot.uncertaintyMs, stratum: snapshot.stratum, sampledAtMs: snapshot.sampledAtMs } satisfies MeshProbeReading]; });
+  return snapshots.flatMap(snapshot => { if (seen.has(snapshot.sourceId)) return []; seen.add(snapshot.sourceId); const source = sourceById.get(snapshot.sourceId); if (!source) return []; const metadata = networkMetadata.get(snapshot.sourceId); return [{ sourceId: snapshot.sourceId, sourceClass: source.sourceClass, groupKey: source.groupKey, asn: metadata?.asn ?? null, countryCode: metadata?.countryCode ?? null, regionCode: metadata?.regionCode ?? null, status: snapshot.status, detail: snapshot.detail, offsetMs: snapshot.offsetMs, delayMs: snapshot.delayMs, uncertaintyMs: snapshot.uncertaintyMs, stratum: snapshot.stratum, sampledAtMs: snapshot.sampledAtMs } satisfies MeshProbeReading]; });
 }
 
 export async function getPublicGlobalMeshRegistry(limit = 200) {
   const db = await getDb(); if (!db) return [] as Array<Pick<GlobalMeshSource, "id" | "displayName" | "sourceClass" | "state" | "provenance" | "publicMetadataOptIn" | "publicLabel" | "region">>;
   const sources = await db.select().from(globalTimeSources).where(and(eq(globalTimeSources.state, "active"), eq(globalTimeSources.publicMetadataOptIn, true))).orderBy(globalTimeSources.sourceClass, globalTimeSources.displayName).limit(Math.min(Math.max(1, limit), 200));
   return sources.map(source => ({ ...mapGlobalSource(source), host: undefined, groupKey: undefined, lastProbeAtMs: undefined, consecutiveFailures: undefined, nextEligibleAtMs: undefined }));
+}
+
+function sha256(value: string): string { return createHash("sha256").update(value).digest("hex"); }
+function trustId(prefix: string): string { return `${prefix}-${randomUUID().replace(/-/g, "").slice(0, 24)}`; }
+
+export async function createAgentInstallation(ownerUserId: number, input: { publicKey: string; platform: AgentPlatform; agentVersion: string; coarseRegion: string | null }) {
+  const db = await getDb(); if (!db) return null;
+  const publicKey = input.publicKey.trim(); const keyFingerprint = sha256(publicKey);
+  const existing = (await db.select({ id: operatorAgentInstallations.id, ownerUserId: operatorAgentInstallations.ownerUserId, revokedAt: operatorAgentInstallations.revokedAt }).from(operatorAgentInstallations).where(eq(operatorAgentInstallations.keyFingerprint, keyFingerprint)).limit(1))[0];
+  if (existing && existing.ownerUserId !== ownerUserId) throw new Error("This contributor key is already enrolled by another account.");
+  if (existing && !existing.revokedAt) throw new Error("This contributor key is already active.");
+  const id = existing?.id ?? trustId("agent"); const enrollmentCredential = randomBytes(32).toString("base64url");
+  const values = { id, ownerUserId, publicKey, keyFingerprint, accessTokenHash: sha256(enrollmentCredential), platform: input.platform, agentVersion: input.agentVersion, coarseRegion: input.coarseRegion, lastSeenAtMs: null, revokedAt: null };
+  await db.insert(operatorAgentInstallations).values(values).onDuplicateKeyUpdate({ set: { accessTokenHash: values.accessTokenHash, agentVersion: input.agentVersion, coarseRegion: input.coarseRegion, revokedAt: null, updatedAt: new Date() } });
+  return { id, keyFingerprint, platform: input.platform, agentVersion: input.agentVersion, coarseRegion: input.coarseRegion, enrollmentCredential };
+}
+
+export async function getAgentInstallationByCredential(installationId: string, enrollmentCredential: string) {
+  const db = await getDb(); if (!db || !enrollmentCredential) return null;
+  return (await db.select({ id: operatorAgentInstallations.id, ownerUserId: operatorAgentInstallations.ownerUserId, revokedAt: operatorAgentInstallations.revokedAt }).from(operatorAgentInstallations).where(and(eq(operatorAgentInstallations.id, installationId), eq(operatorAgentInstallations.accessTokenHash, sha256(enrollmentCredential)), isNull(operatorAgentInstallations.revokedAt))).limit(1))[0] ?? null;
+}
+
+export async function getAgentInstallations(ownerUserId: number) {
+  const db = await getDb(); if (!db) return [];
+  return db.select({ id: operatorAgentInstallations.id, platform: operatorAgentInstallations.platform, keyFingerprint: operatorAgentInstallations.keyFingerprint, agentVersion: operatorAgentInstallations.agentVersion, coarseRegion: operatorAgentInstallations.coarseRegion, lastSeenAtMs: operatorAgentInstallations.lastSeenAtMs, revokedAt: operatorAgentInstallations.revokedAt }).from(operatorAgentInstallations).where(eq(operatorAgentInstallations.ownerUserId, ownerUserId)).orderBy(desc(operatorAgentInstallations.createdAt)).limit(50);
+}
+
+export async function revokeAgentInstallation(ownerUserId: number, installationId: string) {
+  const db = await getDb(); if (!db) return false;
+  const result = await db.update(operatorAgentInstallations).set({ revokedAt: new Date() }).where(and(eq(operatorAgentInstallations.id, installationId), eq(operatorAgentInstallations.ownerUserId, ownerUserId), isNull(operatorAgentInstallations.revokedAt)));
+  return result[0].affectedRows > 0;
+}
+
+export async function createAttestationChallenge(ownerUserId: number, input: { installationId: string; sourceId: string }) {
+  const db = await getDb(); if (!db) return null;
+  const [installation, source] = await Promise.all([
+    db.select({ id: operatorAgentInstallations.id, revokedAt: operatorAgentInstallations.revokedAt }).from(operatorAgentInstallations).where(and(eq(operatorAgentInstallations.id, input.installationId), eq(operatorAgentInstallations.ownerUserId, ownerUserId))).limit(1),
+    db.select({ id: globalTimeSources.id, state: globalTimeSources.state }).from(globalTimeSources).where(and(eq(globalTimeSources.id, input.sourceId), eq(globalTimeSources.ownerUserId, ownerUserId), eq(globalTimeSources.sourceClass, "community"))).limit(1),
+  ]);
+  if (!installation[0] || installation[0].revokedAt || !source[0] || source[0].state !== "active") throw new Error("An active owned source and non-revoked contributor installation are required.");
+  const nowMs = Date.now(); const nonce = randomBytes(32).toString("base64url"); const id = trustId("challenge"); const expiresAtMs = nowMs + ATTESTATION_CHALLENGE_TTL_MS;
+  await db.insert(operatorAttestationChallenges).values({ id, installationId: input.installationId, sourceId: input.sourceId, nonceHash: sha256(nonce), expiresAtMs });
+  return { id, installationId: input.installationId, sourceId: input.sourceId, nonce, expiresAtMs };
+}
+
+export async function getAttestationVerificationContext(installationId: string, challengeId: string) {
+  const db = await getDb(); if (!db) return null;
+  const challenge = (await db.select().from(operatorAttestationChallenges).where(and(eq(operatorAttestationChallenges.id, challengeId), eq(operatorAttestationChallenges.installationId, installationId), isNull(operatorAttestationChallenges.consumedAt))).limit(1))[0];
+  if (!challenge) return null;
+  const installation = (await db.select().from(operatorAgentInstallations).where(and(eq(operatorAgentInstallations.id, installationId), isNull(operatorAgentInstallations.revokedAt))).limit(1))[0];
+  return installation ? { challenge, installation } : null;
+}
+
+export async function recordVerifiedAttestation(input: { installationId: string; challengeId: string; nonce: string; envelopeHash: string; envelope: AgentAttestationEnvelope }) {
+  const db = await getDb(); if (!db) return { accepted: false, reason: "database_unavailable" as const };
+  const context = await getAttestationVerificationContext(input.installationId, input.challengeId);
+  const reason = !context ? "challenge_unavailable" : context.challenge.expiresAtMs < Date.now() ? "challenge_expired" : context.challenge.nonceHash !== sha256(input.nonce) ? "nonce_mismatch" : context.challenge.sourceId !== input.envelope.sourceId ? "source_mismatch" : null;
+  if (reason) return { accepted: false, reason };
+  const consume = await db.update(operatorAttestationChallenges).set({ consumedAt: new Date() }).where(and(eq(operatorAttestationChallenges.id, input.challengeId), eq(operatorAttestationChallenges.installationId, input.installationId), isNull(operatorAttestationChallenges.consumedAt)));
+  if (consume[0].affectedRows !== 1) return { accepted: false, reason: "challenge_already_consumed" as const };
+  const qualityBand = deriveAttestationQualityBand(input.envelope);
+  await db.insert(operatorHealthAttestations).values({ sourceId: input.envelope.sourceId, installationId: input.installationId, envelopeHash: input.envelopeHash, qualityBand, status: "accepted", sampledAtMs: input.envelope.sampledAtMs });
+  await db.update(operatorAgentInstallations).set({ lastSeenAtMs: Date.now(), agentVersion: input.envelope.agentVersion }).where(eq(operatorAgentInstallations.id, input.installationId));
+  return { accepted: true as const, qualityBand };
+}
+
+export async function getSourceAttestationStatus(sourceIds: string[], nowMs = Date.now()) {
+  const db = await getDb(); if (!db || !sourceIds.length) return new Map<string, { lastAttestedAtMs: number | null; qualityBand: string | null; fresh: boolean }>();
+  const rows = await db.select().from(operatorHealthAttestations).where(and(inArray(operatorHealthAttestations.sourceId, sourceIds), eq(operatorHealthAttestations.status, "accepted"))).orderBy(desc(operatorHealthAttestations.sampledAtMs)).limit(Math.min(2_000, sourceIds.length * 8));
+  const seen = new Map<string, { lastAttestedAtMs: number | null; qualityBand: string | null; fresh: boolean }>();
+  for (const row of rows) if (!seen.has(row.sourceId)) seen.set(row.sourceId, { lastAttestedAtMs: row.sampledAtMs, qualityBand: row.qualityBand, fresh: isAttestationFresh(row.sampledAtMs, nowMs) });
+  return seen;
+}
+
+export async function upsertSourceReviewApplication(ownerUserId: number, input: { sourceId: string; capabilities: string[]; publicQueueOptIn: boolean; requestedPublicLabel: string | null }) {
+  const db = await getDb(); if (!db) return false;
+  const source = (await db.select({ id: globalTimeSources.id, publicLabel: globalTimeSources.publicLabel }).from(globalTimeSources).where(and(eq(globalTimeSources.id, input.sourceId), eq(globalTimeSources.ownerUserId, ownerUserId), eq(globalTimeSources.sourceClass, "community"))).limit(1))[0];
+  if (!source) throw new Error("Only the owner of a community source may submit an application.");
+  if (input.publicQueueOptIn && !(input.requestedPublicLabel ?? source.publicLabel)) throw new Error("A public queue label is required when public listing is enabled.");
+  const nowMs = Date.now(); const values = { sourceId: input.sourceId, applicantUserId: ownerUserId, status: "pending" as const, capabilitiesJson: JSON.stringify(input.capabilities.slice(0, 8)), publicQueueOptIn: input.publicQueueOptIn, requestedPublicLabel: input.publicQueueOptIn ? (input.requestedPublicLabel ?? source.publicLabel) : null, publicRationale: null, submittedAtMs: nowMs, updatedAtMs: nowMs };
+  await db.insert(sourceReviewApplications).values(values).onDuplicateKeyUpdate({ set: { capabilitiesJson: values.capabilitiesJson, publicQueueOptIn: values.publicQueueOptIn, requestedPublicLabel: values.requestedPublicLabel, status: "pending", updatedAtMs: nowMs } });
+  return true;
+}
+
+export async function getPublicSourceReviewApplications(limit = 100): Promise<PublicSourceApplication[]> {
+  const db = await getDb(); if (!db) return [];
+  const applications = await db.select().from(sourceReviewApplications).where(eq(sourceReviewApplications.publicQueueOptIn, true)).orderBy(desc(sourceReviewApplications.updatedAtMs)).limit(Math.min(Math.max(1, limit), 100));
+  const sourceIds = applications.map(application => application.sourceId); if (!sourceIds.length) return [];
+  const sources = await db.select({ id: globalTimeSources.id, publicLabel: globalTimeSources.publicLabel, region: globalTimeSources.region }).from(globalTimeSources).where(inArray(globalTimeSources.id, sourceIds)).limit(100);
+  const sourceById = new Map(sources.map(source => [source.id, source]));
+  return applications.flatMap(application => { const source = sourceById.get(application.sourceId); const label = application.requestedPublicLabel ?? source?.publicLabel; return label ? [{ sourceId: application.sourceId, publicLabel: label, region: source?.region ?? null, status: application.status, submittedAtMs: application.submittedAtMs, updatedAtMs: application.updatedAtMs, publicRationale: application.publicRationale }] : []; });
+}
+
+export async function getReviewerSourceApplications(limit = 100) {
+  const db = await getDb(); if (!db) return [];
+  const applications = await db.select().from(sourceReviewApplications).orderBy(desc(sourceReviewApplications.updatedAtMs)).limit(Math.min(Math.max(1, limit), 100));
+  const sourceIds = applications.map(application => application.sourceId); if (!sourceIds.length) return [];
+  const [sources, attestations, metadata] = await Promise.all([
+    db.select({ id: globalTimeSources.id, host: globalTimeSources.host, displayName: globalTimeSources.displayName, state: globalTimeSources.state, verifiedAt: globalTimeSources.verifiedAt, region: globalTimeSources.region }).from(globalTimeSources).where(inArray(globalTimeSources.id, sourceIds)).limit(100),
+    getSourceAttestationStatus(sourceIds),
+    db.select().from(sourceNetworkMetadata).where(inArray(sourceNetworkMetadata.sourceId, sourceIds)).limit(100),
+  ]);
+  const sourceById = new Map(sources.map(source => [source.id, source])); const metadataById = new Map(metadata.map(item => [item.sourceId, item]));
+  return applications.flatMap(application => { const source = sourceById.get(application.sourceId); return source ? [{ application, source, attestation: attestations.get(application.sourceId) ?? null, networkMetadata: metadataById.get(application.sourceId) ?? null }] : []; });
+}
+
+export async function decideSourceReviewApplication(reviewerUserId: number, input: { sourceId: string; decision: SourceReviewDecision; reasonCode: string; privateNote: string | null; publicRationale: string | null }) {
+  const db = await getDb(); if (!db) return false;
+  const application = (await db.select().from(sourceReviewApplications).where(eq(sourceReviewApplications.sourceId, input.sourceId)).limit(1))[0];
+  const source = (await db.select().from(globalTimeSources).where(eq(globalTimeSources.id, input.sourceId)).limit(1))[0];
+  if (!application || !source) return false;
+  const currentAttestation = (await getSourceAttestationStatus([input.sourceId])).get(input.sourceId);
+  if (input.decision === "approve" && (!currentAttestation?.fresh || source.state !== "active")) throw new Error("Approval requires DNS activation and a fresh accepted health attestation.");
+  const nextStatus = input.decision === "approve" ? "approved" : input.decision === "request_attestation" ? "needs_attestation" : input.decision === "reject" ? "rejected" : input.decision === "withdraw" ? "withdrawn" : application.status;
+  const nextState = sourceStateForReview(input.decision);
+  const publicRationale = sanitizePublicRationale(input.publicRationale);
+  await db.insert(sourceReviewEvents).values({ sourceId: input.sourceId, reviewerUserId, priorState: source.state, nextState, decision: input.decision, reasonCode: input.reasonCode, privateNote: input.privateNote?.trim().slice(0, 500) || null, publicRationale });
+  await db.update(sourceReviewApplications).set({ status: nextStatus, publicRationale, updatedAtMs: Date.now() }).where(eq(sourceReviewApplications.sourceId, input.sourceId));
+  if (input.decision === "quarantine" || input.decision === "withdraw" || input.decision === "reject") await db.update(globalTimeSources).set({ state: input.decision === "quarantine" ? "quarantined" : "withdrawn", nextEligibleAtMs: null }).where(eq(globalTimeSources.id, input.sourceId));
+  return true;
+}
+
+export async function getSourceNetworkMetadata(sourceIds: string[]): Promise<Map<string, SourceNetworkMetadata>> {
+  const db = await getDb(); if (!db || !sourceIds.length) return new Map();
+  const rows = await db.select().from(sourceNetworkMetadata).where(inArray(sourceNetworkMetadata.sourceId, sourceIds)).limit(400);
+  return new Map(rows.map(row => [row.sourceId, { sourceId: row.sourceId, asn: row.asn, countryCode: row.countryCode, regionCode: row.regionCode, confidence: row.confidence, observedAtMs: row.observedAtMs, expiresAtMs: row.expiresAtMs }]));
 }

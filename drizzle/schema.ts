@@ -149,3 +149,82 @@ export const globalSourceQualitySummaries = mysqlTable("global_source_quality_su
   medianDelayMs: double("medianDelayMs"),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
+
+/** Device-bound contributor keys remain private to their owner and trusted reviewers. */
+export const operatorAgentInstallations = mysqlTable("operator_agent_installations", {
+  id: varchar("id", { length: 64 }).primaryKey(),
+  ownerUserId: int("ownerUserId").notNull(),
+  publicKey: varchar("publicKey", { length: 96 }).notNull(),
+  keyFingerprint: varchar("keyFingerprint", { length: 64 }).notNull().unique(),
+  accessTokenHash: varchar("accessTokenHash", { length: 64 }).notNull().unique(),
+  platform: mysqlEnum("platform", ["linux", "windows", "ios"]).notNull(),
+  agentVersion: varchar("agentVersion", { length: 32 }).notNull(),
+  coarseRegion: varchar("coarseRegion", { length: 48 }),
+  lastSeenAtMs: double("lastSeenAtMs"),
+  revokedAt: timestamp("revokedAt"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, table => [index("agent_installation_owner_idx").on(table.ownerUserId, table.revokedAt)]);
+
+/** Single-use challenges are stored only as SHA-256 hashes to prevent replay. */
+export const operatorAttestationChallenges = mysqlTable("operator_attestation_challenges", {
+  id: varchar("id", { length: 64 }).primaryKey(),
+  installationId: varchar("installationId", { length: 64 }).notNull(),
+  sourceId: varchar("sourceId", { length: 64 }).notNull(),
+  nonceHash: varchar("nonceHash", { length: 64 }).notNull(),
+  expiresAtMs: double("expiresAtMs").notNull(),
+  consumedAt: timestamp("consumedAt"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, table => [index("attestation_challenge_installation_idx").on(table.installationId, table.expiresAtMs), index("attestation_challenge_source_idx").on(table.sourceId, table.expiresAtMs)]);
+
+/** Accepted/rejected records retain evidence hashes and derived quality, never a raw signed envelope. */
+export const operatorHealthAttestations = mysqlTable("operator_health_attestations", {
+  id: int("id").autoincrement().primaryKey(),
+  sourceId: varchar("sourceId", { length: 64 }).notNull(),
+  installationId: varchar("installationId", { length: 64 }).notNull(),
+  envelopeHash: varchar("envelopeHash", { length: 64 }).notNull(),
+  qualityBand: mysqlEnum("qualityBand", ["healthy", "watch", "degraded"]).notNull(),
+  status: mysqlEnum("status", ["accepted", "rejected"]).notNull(),
+  reasonCode: varchar("reasonCode", { length: 96 }),
+  sampledAtMs: double("sampledAtMs").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, table => [index("health_attestation_source_sampled_idx").on(table.sourceId, table.sampledAtMs), index("health_attestation_installation_idx").on(table.installationId, table.createdAt)]);
+
+/** A source owner's review request is isolated from the public queue projection. */
+export const sourceReviewApplications = mysqlTable("source_review_applications", {
+  sourceId: varchar("sourceId", { length: 64 }).primaryKey(),
+  applicantUserId: int("applicantUserId").notNull(),
+  status: mysqlEnum("status", ["pending", "needs_attestation", "approved", "rejected", "withdrawn"]).default("pending").notNull(),
+  capabilitiesJson: text("capabilitiesJson").notNull(),
+  publicQueueOptIn: boolean("publicQueueOptIn").default(false).notNull(),
+  requestedPublicLabel: varchar("requestedPublicLabel", { length: 48 }),
+  publicRationale: varchar("publicRationale", { length: 280 }),
+  submittedAtMs: double("submittedAtMs").notNull(),
+  updatedAtMs: double("updatedAtMs").notNull(),
+}, table => [index("review_application_status_idx").on(table.status, table.updatedAtMs), index("review_application_applicant_idx").on(table.applicantUserId, table.updatedAtMs)]);
+
+/** Every state-changing review action has an auditable public and private rationale boundary. */
+export const sourceReviewEvents = mysqlTable("source_review_events", {
+  id: int("id").autoincrement().primaryKey(),
+  sourceId: varchar("sourceId", { length: 64 }).notNull(),
+  reviewerUserId: int("reviewerUserId").notNull(),
+  priorState: varchar("priorState", { length: 24 }).notNull(),
+  nextState: varchar("nextState", { length: 24 }).notNull(),
+  decision: mysqlEnum("decision", ["approve", "request_attestation", "quarantine", "reject", "withdraw"]).notNull(),
+  reasonCode: varchar("reasonCode", { length: 96 }).notNull(),
+  privateNote: varchar("privateNote", { length: 500 }),
+  publicRationale: varchar("publicRationale", { length: 280 }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, table => [index("review_event_source_created_idx").on(table.sourceId, table.createdAt), index("review_event_reviewer_created_idx").on(table.reviewerUserId, table.createdAt)]);
+
+/** Cached, coarse network metadata informs correlation penalties without exposing raw endpoints publicly. */
+export const sourceNetworkMetadata = mysqlTable("source_network_metadata", {
+  sourceId: varchar("sourceId", { length: 64 }).primaryKey(),
+  asn: varchar("asn", { length: 24 }),
+  countryCode: varchar("countryCode", { length: 8 }),
+  regionCode: varchar("regionCode", { length: 24 }),
+  lookupSource: varchar("lookupSource", { length: 48 }).notNull(),
+  confidence: mysqlEnum("confidence", ["unknown", "low", "medium", "high"]).default("unknown").notNull(),
+  observedAtMs: double("observedAtMs").notNull(),
+  expiresAtMs: double("expiresAtMs").notNull(),
+}, table => [index("network_metadata_expiry_idx").on(table.expiresAtMs)]);

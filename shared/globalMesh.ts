@@ -28,6 +28,9 @@ export type MeshProbeReading = {
   sourceId: string;
   sourceClass: GlobalMeshSourceClass;
   groupKey: string;
+  asn?: string | null;
+  countryCode?: string | null;
+  regionCode?: string | null;
   status: "reachable" | "unreachable" | "blocked" | "quarantined";
   offsetMs: number | null;
   delayMs: number | null;
@@ -45,6 +48,9 @@ export type MeshConsensus = {
   fusedUncertaintyMs: number | null;
   contributorCount: number;
   independentGroupCount: number;
+  independentAsnCount: number;
+  independentRegionCount: number;
+  diversityState: "diverse" | "limited" | "unknown";
   eligibleCount: number;
   rejectedCount: number;
   qualityState: "healthy" | "degraded" | "unavailable";
@@ -54,6 +60,7 @@ export type MeshConsensus = {
 
 const MAX_DELAY_MS = 1_200;
 const MAX_UNCERTAINTY_MS = 600;
+const MIN_CORRELATED_DIVERSITY_FACTOR = 0.35;
 
 function median(values: number[]): number {
   const sorted = [...values].sort((a, b) => a - b);
@@ -62,6 +69,29 @@ function median(values: number[]): number {
 }
 
 function finite(value: number | null): value is number { return typeof value === "number" && Number.isFinite(value); }
+
+function normalizedBucket(value: string | null | undefined): string | null {
+  const normalized = value?.trim().toUpperCase();
+  return normalized || null;
+}
+
+function saturationFactor(seen: number): number {
+  return seen === 0 ? 1 : Math.max(MIN_CORRELATED_DIVERSITY_FACTOR, 1 / (seen + 1));
+}
+
+/**
+ * Applies an independence penalty only where metadata is available. Missing metadata
+ * is deliberately neutral: it cannot improve a source's apparent trustworthiness.
+ */
+export function calculateDiversityFactor(reading: Pick<MeshProbeReading, "asn" | "countryCode" | "regionCode">, observed: { asn: Map<string, number>; region: Map<string, number> }): number {
+  const asn = normalizedBucket(reading.asn);
+  const region = normalizedBucket(reading.regionCode) ?? normalizedBucket(reading.countryCode);
+  const asnFactor = asn ? saturationFactor(observed.asn.get(asn) ?? 0) : 1;
+  const regionFactor = region ? saturationFactor(observed.region.get(region) ?? 0) : 1;
+  if (asn) observed.asn.set(asn, (observed.asn.get(asn) ?? 0) + 1);
+  if (region) observed.region.set(region, (observed.region.get(region) ?? 0) + 1);
+  return asnFactor * regionFactor;
+}
 
 /**
  * Selects a bounded, fair cohort. It never expands an unbounded source registry into
@@ -86,7 +116,7 @@ export function fuseGlobalTime(readings: MeshProbeReading[]): MeshConsensus {
     if (reading.uncertaintyMs > MAX_UNCERTAINTY_MS) { rejected.push({ sourceId: reading.sourceId, reason: "high_uncertainty" }); return []; }
     return [reading as MeshProbeReading & { offsetMs: number; delayMs: number; uncertaintyMs: number }];
   });
-  if (!eligible.length) return { fusedOffsetMs: null, fusedUncertaintyMs: null, contributorCount: 0, independentGroupCount: 0, eligibleCount: 0, rejectedCount: rejected.length, qualityState: "unavailable", contributors: [], rejected };
+  if (!eligible.length) return { fusedOffsetMs: null, fusedUncertaintyMs: null, contributorCount: 0, independentGroupCount: 0, independentAsnCount: 0, independentRegionCount: 0, diversityState: "unknown", eligibleCount: 0, rejectedCount: rejected.length, qualityState: "unavailable", contributors: [], rejected };
 
   const midpoint = median(eligible.map(reading => reading.offsetMs));
   const mad = median(eligible.map(reading => Math.abs(reading.offsetMs - midpoint)));
@@ -106,17 +136,27 @@ export function fuseGlobalTime(readings: MeshProbeReading[]): MeshConsensus {
     } else rejected.push({ sourceId: reading.sourceId, reason: "duplicate_group" });
   }
   const contributors = Array.from(uniqueGroupReadings.values());
-  if (!contributors.length) return { fusedOffsetMs: null, fusedUncertaintyMs: null, contributorCount: 0, independentGroupCount: 0, eligibleCount: eligible.length, rejectedCount: rejected.length, qualityState: "unavailable", contributors: [], rejected };
+  if (!contributors.length) return { fusedOffsetMs: null, fusedUncertaintyMs: null, contributorCount: 0, independentGroupCount: 0, independentAsnCount: 0, independentRegionCount: 0, diversityState: "unknown", eligibleCount: eligible.length, rejectedCount: rejected.length, qualityState: "unavailable", contributors: [], rejected };
+  const diversityObserved = { asn: new Map<string, number>(), region: new Map<string, number>() };
+  const diversityFactors = new Map<string, number>();
+  for (const reading of [...contributors].sort((left, right) => left.uncertaintyMs - right.uncertaintyMs || left.sourceId.localeCompare(right.sourceId))) {
+    diversityFactors.set(reading.sourceId, calculateDiversityFactor(reading, diversityObserved));
+  }
   const weighted = contributors.reduce((total, reading) => {
     const variance = Math.max(0.25, reading.uncertaintyMs ** 2 + (reading.delayMs / 2) ** 2);
-    const weight = 1 / variance;
+    const weight = (1 / variance) * (diversityFactors.get(reading.sourceId) ?? 1);
     return { offset: total.offset + reading.offsetMs * weight, weight: total.weight + weight };
   }, { offset: 0, weight: 0 });
   const fusedOffsetMs = weighted.offset / weighted.weight;
   const disagreement = contributors.length > 1 ? Math.sqrt(contributors.reduce((sum, reading) => sum + (reading.offsetMs - fusedOffsetMs) ** 2, 0) / contributors.length) : 0;
-  const fusedUncertaintyMs = Math.sqrt(1 / weighted.weight) + disagreement;
+  const independentAsnCount = diversityObserved.asn.size;
+  const independentRegionCount = diversityObserved.region.size;
+  const metadataKnown = independentAsnCount > 0 || independentRegionCount > 0;
+  const diversityState = !metadataKnown ? "unknown" : independentAsnCount >= 2 && independentRegionCount >= 2 ? "diverse" : "limited";
+  const diversityPenalty = contributors.length < 3 || diversityState === "limited" ? 1.25 : 1;
+  const fusedUncertaintyMs = (Math.sqrt(1 / weighted.weight) + disagreement) * diversityPenalty;
   const qualityState = contributors.length >= 3 ? "healthy" : "degraded";
-  return { fusedOffsetMs, fusedUncertaintyMs, contributorCount: contributors.length, independentGroupCount: contributors.length, eligibleCount: eligible.length, rejectedCount: rejected.length, qualityState, contributors: contributors.map(reading => reading.sourceId), rejected };
+  return { fusedOffsetMs, fusedUncertaintyMs, contributorCount: contributors.length, independentGroupCount: contributors.length, independentAsnCount, independentRegionCount, diversityState, eligibleCount: eligible.length, rejectedCount: rejected.length, qualityState, contributors: contributors.map(reading => reading.sourceId), rejected };
 }
 
 export function calculateBackoffMs(consecutiveFailures: number): number {

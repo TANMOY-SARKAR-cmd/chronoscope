@@ -44,6 +44,16 @@ describe("global source mesh", () => {
     expect(disagreeing.fusedUncertaintyMs).toBeGreaterThan(single.fusedUncertaintyMs ?? 0);
   });
 
+  it("uses known ASN and regional diversity cautiously without rewarding unknown metadata", () => {
+    const diverse = fuseGlobalTime([reading("a", 1, { asn: "AS1", regionCode: "EU" }), reading("b", 1.2, { asn: "AS2", regionCode: "NA" }), reading("c", 0.9, { asn: "AS3", regionCode: "AP" })]);
+    const limited = fuseGlobalTime([reading("a", 1, { asn: "AS1", regionCode: "EU" }), reading("b", 1.2, { asn: "AS1", regionCode: "EU" }), reading("c", 0.9, { asn: "AS1", regionCode: "EU" })]);
+    const unknown = fuseGlobalTime([reading("a", 1), reading("b", 1.2), reading("c", 0.9)]);
+    expect(diverse.diversityState).toBe("diverse");
+    expect(limited.diversityState).toBe("limited");
+    expect(unknown.diversityState).toBe("unknown");
+    expect(limited.fusedUncertaintyMs).toBeGreaterThan(diverse.fusedUncertaintyMs ?? 0);
+  });
+
   it("does not expose a private community operator label", () => {
     expect(safePublicSourceLabel(source("private", { displayName: "Personal lab oscillator", publicLabel: "Lab" }))).toBe("Verified community source");
     expect(safePublicSourceLabel(source("public", { publicMetadataOptIn: true, publicLabel: "Open PPS lab" }))).toBe("Open PPS lab");
