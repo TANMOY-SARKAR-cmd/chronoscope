@@ -7,6 +7,7 @@ import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
 const Leaderboard = lazy(() => import("./pages/Leaderboard"));
 const SourceReview = lazy(() => import("./pages/SourceReview"));
+const Methodology = lazy(() => import("./pages/Methodology"));
 const SyncView = lazy(() => import("./pages/sections/SyncView"));
 const PeersView = lazy(() => import("./pages/sections/PeersView"));
 const ObservabilityView = lazy(() => import("./pages/sections/ObservabilityView"));
@@ -31,6 +32,7 @@ function Router() {
       <Route path={"/contribute"} component={ContributeView} />
       <Route path={"/leaderboard"} component={Leaderboard} />
       <Route path={"/source-review"} component={SourceReview} />
+      <Route path={"/methodology"} component={Methodology} />
       <Route path={"/404"} component={NotFound} />
       {/* Final fallback route */}
       <Route component={NotFound} />

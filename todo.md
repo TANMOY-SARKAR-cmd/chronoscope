@@ -137,7 +137,7 @@
 - [x] Correct Phase 1 mobile header density so branding and essential status remain readable without competing actions.
 - [x] Complete the global-mesh persistence test double so roll-up materialization remains covered without emitting false error logs.
 - [x] Add Phase 1 accessibility, responsive, contract, and browser-flow coverage; verify the primary first-visit success measure and save its checkpoint.
-- [ ] Add Phase 2 first-run education, root README, single-source fusion methodology, and initial agent key-lifecycle documentation.
+- [x] Add Phase 2 first-run education, root README, single-source fusion methodology, and initial agent key-lifecycle documentation.
 - [ ] Implement Phase 3 bounded scheduler readiness, dry-run safeguards, aggregate freshness, and protected anomaly signals; activate no schedule without explicit owner approval.
 - [ ] Add Phase 4 privacy-redaction browser coverage, production-safe authenticated fixtures, CI quality gates, and reproducible agent-release assurance.
 - [x] Record the exact CorrectedTimeCrown input shape and its source queries in the versioned Phase 0 baseline.
@@ -145,3 +145,4 @@
 - [x] Refactor Phase 1 section views into explicit lazy route/view boundaries and remove brittle positional CSS gating.
 - [x] Record explicit evidence for the Phase 1 first-visit success measure before saving its dedicated checkpoint.
 - [x] Save and document the dedicated Phase 1 product-clarity checkpoint after all validation gates pass.
+- [x] Save the independently validated Phase 2 methodology and education checkpoint.

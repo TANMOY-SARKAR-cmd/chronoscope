@@ -1,5 +1,6 @@
 import { Activity, CheckCircle2, RefreshCw, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Link } from "wouter";
 import { CORRECTED_TIME_CAVEAT, FRESHNESS_COPY, type ChronoMeshFreshnessState } from "@shared/chronomeshEditorial";
 
 type AlertState = "safe" | "indeterminate" | "alert";
@@ -49,7 +50,7 @@ export function CorrectedTimeCrown(props: CorrectedTimeCrownProps) {
         <div className="flex flex-wrap items-center gap-2 text-[10px] font-bold tracking-[.2em] text-[#a3e635]"><Activity className="h-3.5 w-3.5" />CORRECTED UTC / MESH SOLUTION <span className="border border-current/35 px-1.5 py-0.5 text-[9px]">{freshness.label.toUpperCase()}</span></div>
         <h1 id="corrected-time-heading" className="numeric mt-3 break-all text-[clamp(1.45rem,4.2vw,4.75rem)] font-medium leading-none tracking-[-.055em] text-[#f4f4f5]">{props.freshnessState === "loading" && props.updatedAtMs === null ? "AWAITING FIRST ESTIMATE" : renderPreciseUtc(props.correctedUtcMs)} <span className="whitespace-nowrap text-[.3em] tracking-normal text-[#a3e635]">{formatUncertainty(props.uncertaintyMs)}</span></h1>
         <div className="mt-3 flex flex-wrap items-center gap-2 text-xs"><span className="numeric rounded border border-[#a3e635]/40 bg-[#a3e635]/10 px-2 py-1 text-[#a3e635]">{ageText}</span>{props.cohortSummary && <span className="numeric text-[#a1a1aa]">{props.cohortSummary}</span>} {props.alertState !== "safe" && <span className={props.alertState === "alert" ? "text-red-300" : "text-amber-300"}><TriangleAlert className="mr-1 inline h-3.5 w-3.5" />Threshold {props.alertThresholdMs === null ? "unavailable" : `${formatNumber(props.alertThresholdMs)} ms`} / {props.alertState.toUpperCase()}</span>}</div>
-        <p className="mt-3 max-w-3xl text-xs leading-relaxed text-[#a1a1aa]">{freshness.implication} {CORRECTED_TIME_CAVEAT}</p>
+        <p className="mt-3 max-w-3xl text-xs leading-relaxed text-[#a1a1aa]">{freshness.implication} {CORRECTED_TIME_CAVEAT} <Link href="/methodology" className="text-[#a3e635] underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#a3e635]">Read methodology.</Link></p>
         <div className="mt-3 flex flex-wrap items-center gap-3"><Button onClick={props.onRunSync} disabled={props.isSyncing} className="h-9 rounded-none bg-[#a3e635] px-4 font-mono text-xs font-bold text-black hover:bg-[#bef264]"><RefreshCw className={`mr-2 h-3.5 w-3.5 ${props.isSyncing ? "animate-spin" : ""}`} />{props.isSyncing ? "SYNCING 10/10" : "RUN SYNCHRONIZATION"}</Button><span className="text-xs text-[#a1a1aa]">{freshness.nextAction}</span></div>
       </div>
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-2">

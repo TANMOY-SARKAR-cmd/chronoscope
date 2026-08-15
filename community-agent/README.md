@@ -14,6 +14,8 @@ Generate the Ed25519 keypair **on the device**, retain the private key locally, 
 
 The public dashboard exposes only an opt-in source label and compact freshness/quality state. It never publishes the agent public key, enrollment credential, private operator label, host name of a non-opt-in source, or an IP address.
 
+For enrollment, rotation, and incident response, follow the repository’s [agent key-lifecycle guide](../docs/agent-key-lifecycle.md). The browser application’s [Methodology page](https://chronosync-4hgqdc2d.manus.space/methodology) is the single source of truth for what signed evidence and freshness mean.
+
 ## Quick start for Linux and Windows
 
 Install Node.js 20 or later, copy this directory, and create a local `config.json` from `config.example.json`. In the dashboard, use **Community Agent / Signed Health Evidence** to enroll the generated public key and capture the one-time credential.
