@@ -67,4 +67,11 @@
 - [x] Build an AI insight export action integrated with the existing synchronization CSV download.
 - [x] Add tests for public aggregation privacy, tag filtering, chart shaping, and insight CSV escaping.
 - [x] Run type checks, test suite, and desktop/mobile visual verification for the comparison release.
-- [ ] Save the ChronoMesh comparison release checkpoint and provide the version for review.
+- [x] Save the ChronoMesh comparison release checkpoint and provide the version for review.
+- [x] Add accessible visibility state for the local trace and each consented public leaderboard comparison series.
+- [x] Build responsive, keyboard-operable chart legend toggles with clear hidden and visible states.
+- [x] Add automated coverage for series-visibility state reconciliation when public setup data changes.
+- [x] Confirm the chart-series visibility helper, state wiring, and responsive controls in the final rendered code.
+- [x] Run the complete test suite, type check, and desktop/mobile visual verification for the chart-toggle update.
+- [x] Run type checks, tests, and desktop/mobile visual verification for the chart-toggle update.
+- [ ] Save the ChronoMesh chart-toggle release checkpoint and provide the version for review.
