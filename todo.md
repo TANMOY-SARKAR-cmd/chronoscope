@@ -108,3 +108,12 @@
 - [x] Add explicit tests for auditable source-review lifecycle event writes and projections.
 - [x] Re-run the complete regression suite and type check after the final reviewer-guard and audit-event tests.
 - [x] Save and verify the community-agent trust-mesh release checkpoint for review.
+- [x] Capture reproducible build, type, test, dependency, and runtime baseline evidence for the codebase audit.
+- [x] Produce an evidence-led error register covering code quality, security/privacy, resilience, data quality, database scale, and UX architecture.
+- [x] Add a privacy-safe Fusion Observability aggregation contract with bounded time windows and explicit coverage caveats.
+- [x] Add fused-data analytics persistence queries and typed API procedures without exposing private source, operator, or reviewer data.
+- [x] Build a coherent Fusion Observability dashboard with coverage, quality, confidence, attestation, review-funnel, and correlation-risk metrics.
+- [x] Add focused analytics tests for range boundaries, aggregate calculations, privacy projections, and insufficient-data behavior.
+- [x] Write the codebase audit report and prioritized errors, fixes, feature ideas, and data-analytics roadmap.
+- [x] Run full validation and desktop/mobile review for the audit-and-analytics release.
+- [ ] Save a new audit-and-analytics release checkpoint and verify that it contains the Fusion Observability panel, audit report, and validated code state.

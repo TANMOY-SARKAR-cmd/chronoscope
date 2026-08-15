@@ -9,6 +9,7 @@ import { aggregateSourceAccuracy, getSourceRangeStart, type SourceAccuracyRange 
 import { filterPublicSetupsByTag, normalizeLeaderboardTagFilter } from "../shared/peerComparison";
 import { calculateBackoffMs, canTransitionCommunitySource, type GlobalMeshSource, type MeshProbeReading } from "../shared/globalMesh";
 import { ATTESTATION_CHALLENGE_TTL_MS, deriveAttestationQualityBand, isAttestationFresh, sanitizePublicRationale, sourceStateForReview, type AgentAttestationEnvelope, type AgentPlatform, type PublicSourceApplication, type SourceNetworkMetadata, type SourceReviewDecision } from "../shared/agentTrust";
+import { buildFusionObservability, getFusionObservabilityWindowStart, type FusionObservabilityRange } from "../shared/fusionObservability";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 export function __setDbForTests(db: ReturnType<typeof drizzle> | null) { _db = db; }
@@ -101,6 +102,31 @@ export async function getSourceAccuracyAnalytics(range: SourceAccuracyRange) {
   ]);
   const names = new Map(sources.map(source => [source.id, source.displayName]));
   return { range, generatedAt, ...aggregateSourceAccuracy(snapshots.map(snapshot => ({ authority: snapshot.authority, status: snapshot.status, offsetMs: snapshot.offsetMs, uncertaintyMs: snapshot.uncertaintyMs, sampledAtMs: snapshot.sampledAtMs })), names, range) };
+}
+
+/** Returns aggregate mesh health without hostnames, source labels, contributor identities, or review notes. */
+export async function getFusionObservability(range: FusionObservabilityRange) {
+  const db = await getDb();
+  const generatedAtMs = Date.now();
+  if (!db) return buildFusionObservability({ range, generatedAtMs, sources: [], readings: [], freshAttestationSourceIds: [], reviewStatuses: [] });
+  const windowStartMs = getFusionObservabilityWindowStart(range, generatedAtMs);
+  const [sources, snapshots, attestations, reviewApplications] = await Promise.all([
+    db.select({ id: globalTimeSources.id, state: globalTimeSources.state, groupKey: globalTimeSources.groupKey }).from(globalTimeSources).limit(400),
+    db.select({ sourceId: globalSourceProbeSnapshots.sourceId, status: globalSourceProbeSnapshots.status, offsetMs: globalSourceProbeSnapshots.offsetMs, delayMs: globalSourceProbeSnapshots.delayMs, uncertaintyMs: globalSourceProbeSnapshots.uncertaintyMs, sampledAtMs: globalSourceProbeSnapshots.sampledAtMs }).from(globalSourceProbeSnapshots).where(gte(globalSourceProbeSnapshots.sampledAtMs, windowStartMs)).orderBy(desc(globalSourceProbeSnapshots.sampledAtMs)).limit(10_000),
+    db.select({ sourceId: operatorHealthAttestations.sourceId, sampledAtMs: operatorHealthAttestations.sampledAtMs }).from(operatorHealthAttestations).where(eq(operatorHealthAttestations.status, "accepted")).orderBy(desc(operatorHealthAttestations.sampledAtMs)).limit(2_000),
+    db.select({ status: sourceReviewApplications.status }).from(sourceReviewApplications).limit(1_000),
+  ]);
+  const sourceIds = sources.map(source => source.id);
+  const metadata = sourceIds.length ? await db.select({ sourceId: sourceNetworkMetadata.sourceId, asn: sourceNetworkMetadata.asn, regionCode: sourceNetworkMetadata.regionCode }).from(sourceNetworkMetadata).where(inArray(sourceNetworkMetadata.sourceId, sourceIds)).limit(400) : [];
+  const metadataBySource = new Map(metadata.map(item => [item.sourceId, item]));
+  return buildFusionObservability({
+    range,
+    generatedAtMs,
+    sources: sources.map(source => ({ ...source, asn: metadataBySource.get(source.id)?.asn ?? null, regionCode: metadataBySource.get(source.id)?.regionCode ?? null })),
+    readings: snapshots,
+    freshAttestationSourceIds: attestations.filter(attestation => isAttestationFresh(attestation.sampledAtMs, generatedAtMs)).map(attestation => attestation.sourceId),
+    reviewStatuses: reviewApplications.map(application => application.status),
+  });
 }
 
 export type RoomRelayEventInput = { originId: string; roomCode: string; eventType: "upsert" | "remove"; peerId: string; payload: unknown | null };

@@ -2,7 +2,7 @@ import { COOKIE_NAME } from "@shared/const";
 import { z } from "zod";
 import { normalizeChronoPreferences } from "../shared/chronoProfile";
 import { calculateProbe, estimateTimeSync, validateRoomCode } from "../shared/timeMath";
-import { createAgentInstallation, createAttestationChallenge, createCommunitySource, decideSourceReviewApplication, getAgentInstallationByCredential, getAgentInstallations, getChronoPreferences, getCommunitySourceVerification, getGlobalMeshSources, getMeasurementHistory, getPublicGlobalMeshRegistry, getPublicSourceReviewApplications, getPublicStabilityLeaderboard, getPublicStabilityTags, getReviewerSourceApplications, getSourceAccuracyAnalytics, publishPublicStabilityEntry, revokeAgentInstallation, saveChronoPreferences, setCommunitySourceState, storeMeasurementBurst, storeNtpHealthSnapshots, upsertSourceReviewApplication, verifyCommunitySource } from "./db";
+import { createAgentInstallation, createAttestationChallenge, createCommunitySource, decideSourceReviewApplication, getAgentInstallationByCredential, getAgentInstallations, getChronoPreferences, getCommunitySourceVerification, getFusionObservability, getGlobalMeshSources, getMeasurementHistory, getPublicGlobalMeshRegistry, getPublicSourceReviewApplications, getPublicStabilityLeaderboard, getPublicStabilityTags, getReviewerSourceApplications, getSourceAccuracyAnalytics, publishPublicStabilityEntry, revokeAgentInstallation, saveChronoPreferences, setCommunitySourceState, storeMeasurementBurst, storeNtpHealthSnapshots, upsertSourceReviewApplication, verifyCommunitySource } from "./db";
 import { getSourceHistoryInsight } from "./sourceInsight";
 import { getControlledTimeSourceHealth, getUpstreamNtpHealth, queryCustomNtpHost, validateNtpHostname, verifyNtpDnsOwnership } from "./ntp";
 import { getChronoMeshRealtimeDiagnostics } from "./realtime";
@@ -12,6 +12,7 @@ import { systemRouter } from "./_core/systemRouter";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
 import { AGENT_PLATFORMS, isValidAgentPublicKey, REVIEW_DECISIONS } from "../shared/agentTrust";
 import { submitSignedAgentAttestation } from "./agentTrustService";
+import { FUSION_OBSERVABILITY_RANGES } from "../shared/fusionObservability";
 
 const customProbeWindows = new Map<string, { lastAt: number; count: number; resetAt: number }>();
 function enforceCustomProbeLimit(key: string) {
@@ -111,6 +112,7 @@ export const appRouter = router({
       return { generatedAt: Date.now(), readings };
     }),
     sourceAnalytics: publicProcedure.input(z.object({ range: z.enum(["24h", "7d", "30d"]).default("24h") })).query(({ input }) => getSourceAccuracyAnalytics(input.range)),
+    fusionObservability: publicProcedure.input(z.object({ range: z.enum(FUSION_OBSERVABILITY_RANGES).default("24h") }).optional()).query(({ input }) => getFusionObservability(input?.range ?? "24h")),
     sourceHistoryInsight: publicProcedure.input(z.object({ range: z.enum(["24h", "7d", "30d"]).default("24h") })).query(({ input }) => getSourceHistoryInsight(input.range)),
     publicStabilityLeaderboard: publicProcedure.input(z.object({ tag: z.string().trim().max(24).optional(), limit: z.number().int().min(1).max(100).default(100) }).optional()).query(({ input }) => getPublicStabilityLeaderboard(input?.tag, input?.limit ?? 100)),
     publicStabilityTags: publicProcedure.query(() => getPublicStabilityTags()),
