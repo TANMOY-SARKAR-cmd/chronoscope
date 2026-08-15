@@ -43,4 +43,19 @@
 - [x] Extract and test relay safeguards for self-echo suppression, bounded reports, and managed-to-database fallback behavior.
 - [x] Re-run the complete test suite after profile, relay, and analytics coverage is in place.
 - [x] Run migration, type checks, test suite, and desktop/mobile verification for the distributed release.
-- [ ] Save the distributed ChronoMesh release checkpoint and provide the version for review.
+- [x] Save the distributed ChronoMesh release checkpoint and provide the version for review.
+- [x] Provide the saved distributed ChronoMesh checkpoint version to the user for review.
+- [x] Define the source-history AI summary schema with uncertainty-aware evidence and no unsupported accuracy claims.
+- [x] Add secure server-side AI summary generation, bounded caching, and output validation for source-history trends.
+- [x] Add explicit public-leaderboard opt-in controls, anonymized setup labels, and public-query safeguards.
+- [x] Add a consent-based stability leaderboard data model and aggregation query that never exposes raw peer identity or private descriptions.
+- [x] Build an AI source-history summary card with evidence, limitations, and refresh behavior.
+- [x] Build a public leaderboard route for consented stable setup labels with empty and privacy-safe states.
+- [x] Build a high-contrast dark reading mode with user preference persistence and visible focus/alert states.
+- [x] Add tests for AI summary validation, public-leaderboard privacy, and high-contrast preference behavior.
+- [x] Run migration, type checks, test suite, and desktop/mobile accessibility verification for the insight release.
+- [x] Add bounded server-side AI insight caching with an explicit TTL, bounded key space, and data-change invalidation.
+- [x] Add automated coverage for AI insight cache reuse, expiry, and invalidation behavior.
+- [x] Add direct cache behavior tests covering reuse before TTL expiry, expiry refresh, and data-signature invalidation.
+- [x] Audit high-contrast focus-ring and alert-state readability with documented keyboard and contrast verification.
+- [ ] Save the ChronoMesh insight release checkpoint and provide the version for review.

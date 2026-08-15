@@ -71,8 +71,24 @@ export const userChronoPreferences = mysqlTable("user_chrono_preferences", {
   hardwareTagsJson: text("hardwareTagsJson").notNull(),
   hardwareDescription: varchar("hardwareDescription", { length: 160 }),
   worldZonesJson: text("worldZonesJson").notNull(),
+  publicLeaderboardOptIn: boolean("publicLeaderboardOptIn").default(false).notNull(),
+  publicSetupLabel: varchar("publicSetupLabel", { length: 48 }),
+  highContrastMode: boolean("highContrastMode").default(false).notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
+
+/** Public rows are populated only by a signed-in operator’s explicit publish action. */
+export const publicStabilityEntries = mysqlTable("public_stability_entries", {
+  userId: int("userId").primaryKey(),
+  setupLabel: varchar("setupLabel", { length: 48 }).notNull(),
+  hardwareTagsJson: text("hardwareTagsJson").notNull(),
+  stabilityScore: double("stabilityScore").notNull(),
+  offsetMs: double("offsetMs").notNull(),
+  jitterMs: double("jitterMs").notNull(),
+  uncertaintyMs: double("uncertaintyMs").notNull(),
+  sampleCount: int("sampleCount").notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, table => [index("public_stability_score_idx").on(table.stabilityScore, table.updatedAt)]);
 
 /** Short-lived anonymous room events permit a bounded database relay when managed pub/sub is unavailable. */
 export const roomRelayEvents = mysqlTable("room_relay_events", {

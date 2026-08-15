@@ -1,8 +1,8 @@
 import { and, desc, eq, gt, gte } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
-import { InsertUser, ntpHealthSnapshots, roomRelayEvents, timeMeasurements, timeSources, userChronoPreferences, users } from "../drizzle/schema";
+import { InsertUser, ntpHealthSnapshots, publicStabilityEntries, roomRelayEvents, timeMeasurements, timeSources, userChronoPreferences, users } from "../drizzle/schema";
 import { ENV } from "./_core/env";
-import type { SyncEstimate } from "../shared/timeMath";
+import { calculateStabilityScore, type SyncEstimate } from "../shared/timeMath";
 import type { TimeSource, UpstreamHealth } from "./ntp";
 import { aggregateSourceAccuracy, getSourceRangeStart, type SourceAccuracyRange } from "../shared/sourceAnalytics";
 
@@ -48,22 +48,38 @@ export async function storeNtpHealthSnapshots(readings: UpstreamHealth[]) {
   return true;
 }
 
-export type ChronoPreferences = { alertEnabled: boolean; alertThresholdMs: number; hardwareTemplateOptIn: boolean; hardwareTags: string[]; hardwareDescription: string | null; worldZones: string[] };
-const defaultChronoPreferences: ChronoPreferences = { alertEnabled: true, alertThresholdMs: 25, hardwareTemplateOptIn: false, hardwareTags: [], hardwareDescription: null, worldZones: ["UTC", "America/Los_Angeles", "America/New_York", "Europe/London", "Asia/Kolkata", "Asia/Tokyo"] };
+export type ChronoPreferences = { alertEnabled: boolean; alertThresholdMs: number; hardwareTemplateOptIn: boolean; hardwareTags: string[]; hardwareDescription: string | null; worldZones: string[]; publicLeaderboardOptIn: boolean; publicSetupLabel: string | null; highContrastMode: boolean };
+const defaultChronoPreferences: ChronoPreferences = { alertEnabled: true, alertThresholdMs: 25, hardwareTemplateOptIn: false, hardwareTags: [], hardwareDescription: null, worldZones: ["UTC", "America/Los_Angeles", "America/New_York", "Europe/London", "Asia/Kolkata", "Asia/Tokyo"], publicLeaderboardOptIn: false, publicSetupLabel: null, highContrastMode: false };
 function parseStringArray(value: string, maxLength: number) { try { const parsed: unknown = JSON.parse(value); return Array.isArray(parsed) ? parsed.filter(item => typeof item === "string").slice(0, maxLength) : []; } catch { return []; } }
 
 export async function getChronoPreferences(userId: number): Promise<ChronoPreferences> {
   const db = await getDb(); if (!db) return defaultChronoPreferences;
   const stored = (await db.select().from(userChronoPreferences).where(eq(userChronoPreferences.userId, userId)).limit(1))[0];
   if (!stored) return defaultChronoPreferences;
-  return { alertEnabled: stored.alertEnabled, alertThresholdMs: stored.alertThresholdMs, hardwareTemplateOptIn: stored.hardwareTemplateOptIn, hardwareTags: parseStringArray(stored.hardwareTagsJson, 5), hardwareDescription: stored.hardwareDescription, worldZones: parseStringArray(stored.worldZonesJson, 24).length ? parseStringArray(stored.worldZonesJson, 24) : defaultChronoPreferences.worldZones };
+  return { alertEnabled: stored.alertEnabled, alertThresholdMs: stored.alertThresholdMs, hardwareTemplateOptIn: stored.hardwareTemplateOptIn, hardwareTags: parseStringArray(stored.hardwareTagsJson, 5), hardwareDescription: stored.hardwareDescription, worldZones: parseStringArray(stored.worldZonesJson, 24).length ? parseStringArray(stored.worldZonesJson, 24) : defaultChronoPreferences.worldZones, publicLeaderboardOptIn: stored.publicLeaderboardOptIn, publicSetupLabel: stored.publicSetupLabel, highContrastMode: stored.highContrastMode };
 }
 
 export async function saveChronoPreferences(userId: number, preferences: ChronoPreferences) {
   const db = await getDb(); if (!db) return false;
-  const values = { userId, alertEnabled: preferences.alertEnabled, alertThresholdMs: preferences.alertThresholdMs, hardwareTemplateOptIn: preferences.hardwareTemplateOptIn, hardwareTagsJson: JSON.stringify(preferences.hardwareTags), hardwareDescription: preferences.hardwareDescription, worldZonesJson: JSON.stringify(preferences.worldZones) };
+  const values = { userId, alertEnabled: preferences.alertEnabled, alertThresholdMs: preferences.alertThresholdMs, hardwareTemplateOptIn: preferences.hardwareTemplateOptIn, hardwareTagsJson: JSON.stringify(preferences.hardwareTags), hardwareDescription: preferences.hardwareDescription, worldZonesJson: JSON.stringify(preferences.worldZones), publicLeaderboardOptIn: preferences.publicLeaderboardOptIn, publicSetupLabel: preferences.publicSetupLabel, highContrastMode: preferences.highContrastMode };
   await db.insert(userChronoPreferences).values(values).onDuplicateKeyUpdate({ set: { ...values, updatedAt: new Date() } });
+  if (!preferences.publicLeaderboardOptIn) await db.delete(publicStabilityEntries).where(eq(publicStabilityEntries.userId, userId));
   return true;
+}
+
+export async function publishPublicStabilityEntry(userId: number, input: { offsetMs: number; jitterMs: number; uncertaintyMs: number; sampleCount: number }) {
+  const db = await getDb(); if (!db) return false;
+  const preferences = await getChronoPreferences(userId);
+  if (!preferences.publicLeaderboardOptIn || !preferences.publicSetupLabel) throw new Error("Enable public leaderboard sharing and save a public setup label first.");
+  const stabilityScore = calculateStabilityScore(input.jitterMs, input.sampleCount);
+  await db.insert(publicStabilityEntries).values({ userId, setupLabel: preferences.publicSetupLabel, hardwareTagsJson: JSON.stringify(preferences.hardwareTags), stabilityScore, offsetMs: input.offsetMs, jitterMs: input.jitterMs, uncertaintyMs: input.uncertaintyMs, sampleCount: input.sampleCount }).onDuplicateKeyUpdate({ set: { setupLabel: preferences.publicSetupLabel, hardwareTagsJson: JSON.stringify(preferences.hardwareTags), stabilityScore, offsetMs: input.offsetMs, jitterMs: input.jitterMs, uncertaintyMs: input.uncertaintyMs, sampleCount: input.sampleCount, updatedAt: new Date() } });
+  return true;
+}
+
+export async function getPublicStabilityLeaderboard(limit = 100) {
+  const db = await getDb(); if (!db) return [];
+  const entries = await db.select({ setupLabel: publicStabilityEntries.setupLabel, hardwareTagsJson: publicStabilityEntries.hardwareTagsJson, stabilityScore: publicStabilityEntries.stabilityScore, offsetMs: publicStabilityEntries.offsetMs, jitterMs: publicStabilityEntries.jitterMs, uncertaintyMs: publicStabilityEntries.uncertaintyMs, sampleCount: publicStabilityEntries.sampleCount, updatedAt: publicStabilityEntries.updatedAt }).from(publicStabilityEntries).orderBy(desc(publicStabilityEntries.stabilityScore), desc(publicStabilityEntries.updatedAt)).limit(Math.min(Math.max(1, limit), 100));
+  return entries.map(entry => ({ ...entry, hardwareTags: parseStringArray(entry.hardwareTagsJson, 5) }));
 }
 
 export async function getSourceAccuracyAnalytics(range: SourceAccuracyRange) {
