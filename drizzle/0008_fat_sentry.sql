@@ -1,0 +1,2 @@
+-- Intentionally empty. This migration identifier was reserved during generation;
+-- the corrected additive Fusion Observability schema is in 0009_absurd_nightcrawler.sql.

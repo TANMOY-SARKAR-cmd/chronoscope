@@ -150,6 +150,24 @@ export const globalSourceQualitySummaries = mysqlTable("global_source_quality_su
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
 
+/** Aggregate-only telemetry retained beyond short raw-probe windows for long Fusion Observability views. */
+export const fusionObservabilityRollups = mysqlTable("fusion_observability_rollups", {
+  id: int("id").autoincrement().primaryKey(),
+  granularity: mysqlEnum("granularity", ["hour", "day"]).notNull(),
+  bucketStartMs: double("bucketStartMs").notNull(),
+  bucketEndMs: double("bucketEndMs").notNull(),
+  bucketDurationMs: double("bucketDurationMs").notNull(),
+  sampleCount: int("sampleCount").notNull(),
+  reachableCount: int("reachableCount").notNull(),
+  measuredCount: int("measuredCount").notNull(),
+  medianDelayMs: double("medianDelayMs"),
+  medianUncertaintyMs: double("medianUncertaintyMs"),
+  medianAbsoluteOffsetMs: double("medianAbsoluteOffsetMs"),
+  observedSourceCount: int("observedSourceCount").notNull(),
+  coverageVersion: int("coverageVersion").default(1).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, table => [index("fusion_observability_rollups_window_idx").on(table.bucketStartMs, table.bucketEndMs)]);
+
 /** Device-bound contributor keys remain private to their owner and trusted reviewers. */
 export const operatorAgentInstallations = mysqlTable("operator_agent_installations", {
   id: varchar("id", { length: 64 }).primaryKey(),

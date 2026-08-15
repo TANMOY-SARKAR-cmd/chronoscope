@@ -1,11 +1,12 @@
 import { Activity, Network, Radio, ShieldCheck, TriangleAlert } from "lucide-react";
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
-type FusionRange = "6h" | "24h" | "7d";
+type FusionRange = "6h" | "24h" | "7d" | "30d" | "90d";
 type FusionData = {
   range: FusionRange;
   generatedAtMs: number;
   windowStartMs: number;
+  coverage: { mode: "raw" | "persisted_rollup"; availableBucketCount: number; expectedBucketCount: number; coveragePct: number | null; observedFromMs: number | null; partial: boolean };
   summary: {
     activeSourceCount: number;
     observedSourceCount: number;
@@ -31,9 +32,9 @@ export function FusionObservabilityPanel({ data, isLoading, range, onRangeChange
   const summary = data?.summary;
   const chartData = (data?.timeline ?? []).map(point => ({ ...point, time: new Date(point.bucketStartMs).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit" }) }));
   return <section className="mb-5 overflow-hidden border border-cyan-300/20 bg-[#0a0f10] shadow-[inset_0_1px_0_rgba(103,232,249,.08)]">
-    <div className="flex flex-wrap items-start justify-between gap-4 border-b border-cyan-300/15 bg-cyan-300/[.035] px-4 py-4 lg:px-5"><div><div className="flex items-center gap-2 text-[10px] font-bold tracking-[.2em] text-cyan-200"><Activity className="h-3.5 w-3.5" />FUSION OBSERVABILITY / AGGREGATE-ONLY</div><p className="mt-2 max-w-3xl text-xs leading-relaxed text-[#a1a1aa]">A bounded operational view of the source cohort used by the fusion system. It reports coverage and correlation risk without exposing hostnames, contributor identities, signed evidence, or private review data.</p></div><div className="flex rounded-none border border-cyan-300/20 p-1" role="group" aria-label="Fusion observability time window">{(["6h", "24h", "7d"] as FusionRange[]).map(option => <button key={option} type="button" aria-pressed={range === option} onClick={() => onRangeChange(option)} className={`numeric px-2.5 py-1 text-[10px] ${range === option ? "bg-cyan-200 text-black" : "text-[#a1a1aa] hover:bg-white/5"}`}>{option.toUpperCase()}</button>)}</div></div>
+    <div className="flex flex-wrap items-start justify-between gap-4 border-b border-cyan-300/15 bg-cyan-300/[.035] px-4 py-4 lg:px-5"><div><div className="flex items-center gap-2 text-[10px] font-bold tracking-[.2em] text-cyan-200"><Activity className="h-3.5 w-3.5" />FUSION OBSERVABILITY / AGGREGATE-ONLY</div><p className="mt-2 max-w-3xl text-xs leading-relaxed text-[#a1a1aa]">A bounded operational view of the source cohort used by the fusion system. It reports coverage and correlation risk without exposing hostnames, contributor identities, signed evidence, or private review data.</p></div><div className="flex flex-wrap rounded-none border border-cyan-300/20 p-1" role="group" aria-label="Fusion observability time window">{(["6h", "24h", "7d", "30d", "90d"] as FusionRange[]).map(option => <button key={option} type="button" aria-pressed={range === option} onClick={() => onRangeChange(option)} className={`numeric px-2.5 py-1 text-[10px] ${range === option ? "bg-cyan-200 text-black" : "text-[#a1a1aa] hover:bg-white/5"}`}>{option.toUpperCase()}</button>)}</div></div>
     <div className="grid gap-px bg-cyan-300/10 sm:grid-cols-2 lg:grid-cols-5">{([
-      [Network, "WINDOW COVERAGE", summary ? `${summary.observedSourceCount}/${summary.activeSourceCount}` : "—", "observed / active sources"],
+      [Network, "WINDOW COVERAGE", summary ? `${summary.observedSourceCount}/${summary.activeSourceCount}` : "—", `${number(data?.coverage.coveragePct ?? null)}% ${data?.coverage.mode === "persisted_rollup" ? "persisted" : "raw"} coverage`],
       [Radio, "REACHABILITY", summary ? `${number(summary.reachableRatePct)}%` : "—", `${summary?.sampleCount ?? 0} retained probe samples`],
       [Activity, "MEDIAN DELAY", summary ? `${number(summary.medianDelayMs, 2)} ms` : "—", `uncertainty ${number(summary?.medianUncertaintyMs ?? null, 2)} ms`],
       [ShieldCheck, "FRESH ATTESTATIONS", summary ? String(summary.freshAttestedSourceCount) : "—", `${summary?.reviewCounts.needs_attestation ?? 0} review items await evidence`],

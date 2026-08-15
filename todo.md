@@ -116,4 +116,15 @@
 - [x] Add focused analytics tests for range boundaries, aggregate calculations, privacy projections, and insufficient-data behavior.
 - [x] Write the codebase audit report and prioritized errors, fixes, feature ideas, and data-analytics roadmap.
 - [x] Run full validation and desktop/mobile review for the audit-and-analytics release.
-- [ ] Save a new audit-and-analytics release checkpoint and verify that it contains the Fusion Observability panel, audit report, and validated code state.
+- [x] Save a new audit-and-analytics release checkpoint and verify that it contains the Fusion Observability panel, audit report, and validated code state (version c82049f0).
+- [x] Inspect the resolved dependency graph, package-manager configuration, bundle composition, and roll-up query paths.
+- [x] Upgrade the tRPC family and the transitive AWS XML parser path to audited patched versions, with lockfile verification.
+- [x] Repair pnpm configuration so dependency overrides and patches are honored by the installed package manager.
+- [x] Split non-critical dashboard routes and analytics panels from the initial client bundle while preserving accessible loading states.
+- [x] Add persisted hourly and daily source observability roll-ups with explicit coverage and retention metadata.
+- [x] Extend long-window Fusion Observability queries and UI caveats to prefer roll-ups over capped raw snapshots.
+- [x] Add regression coverage for dependency configuration, lazy dashboard paths, roll-up boundary calculations, and partial-coverage behavior.
+- [x] Run security audit, production bundle benchmark, migration, full validation, visual review, and save the hardening release checkpoint.
+- [x] Repair the development preview entry-module routing so Vite serves the dashboard rather than the SPA fallback.
+- [x] Add reproducible tests for pnpm override/patch configuration and lazy-loaded route wiring.
+- [x] Document the remaining production dependency-audit findings and their out-of-scope follow-up boundary for this release.

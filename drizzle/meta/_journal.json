@@ -57,6 +57,20 @@
       "when": 1786792672303,
       "tag": "0007_acoustic_lily_hollister",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "5",
+      "when": 1786797501807,
+      "tag": "0008_fat_sentry",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "5",
+      "when": 1786797616708,
+      "tag": "0009_absurd_nightcrawler",
+      "breakpoints": true
     }
   ]
 }

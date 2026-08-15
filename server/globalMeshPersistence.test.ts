@@ -1,10 +1,21 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
-import { __setDbForTests, decideSourceReviewApplication, recordVerifiedAttestation, setCommunitySourceState, storeGlobalMeshProbeReadings } from "./db";
+import { fusionObservabilityRollups } from "../drizzle/schema";
+import { __setDbForTests, decideSourceReviewApplication, getFusionObservability, recordVerifiedAttestation, setCommunitySourceState, storeGlobalMeshProbeReadings } from "./db";
 
 afterEach(() => __setDbForTests(null));
 
 describe("global source mesh persistence guards", () => {
+  it("queries persisted aggregate buckets for thirty- and ninety-day observability windows", async () => {
+    let persistedRollupReads = 0;
+    const chain = { where: () => chain, orderBy: () => chain, limit: async () => [] };
+    const fakeDb = { select: () => ({ from: (table: unknown) => { if (table === fusionObservabilityRollups) persistedRollupReads += 1; return chain; } }) };
+    __setDbForTests(fakeDb as never);
+    await getFusionObservability("30d");
+    await getFusionObservability("90d");
+    expect(persistedRollupReads).toBe(2);
+  });
+
   it("does not update an owner-scoped source when its lifecycle transition is invalid", async () => {
     const updates: unknown[] = [];
     const fakeDb = { select: () => ({ from: () => ({ where: () => ({ limit: async () => [{ state: "pending" }] }) }) }), update: () => ({ set: (value: unknown) => { updates.push(value); return { where: async () => [{ affectedRows: 1 }] }; } }) };

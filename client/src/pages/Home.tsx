@@ -21,7 +21,7 @@ import { Link } from "wouter";
 type Peer = { id: string; offsetMs: number; uncertaintyMs: number; jitterMs: number; sampleCount: number; updatedAt: number; tags: string[]; description: string | null };
 type SourceReading = { id: string; name: string; host: string; tier: "authority" | "regional_pool" | "custom"; region?: string; status: "reachable" | "unreachable" | "blocked"; offsetMs: number | null; delayMs: number | null; uncertaintyMs: number | null; sampledAt: number; detail?: string };
 type AnalyticsRange = "24h" | "7d" | "30d";
-type FusionRange = "6h" | "24h" | "7d";
+type FusionRange = "6h" | "24h" | "7d" | "30d" | "90d";
 
 const BURST_SIZE = 10;
 const DEFAULT_ZONES = ["UTC", "America/Los_Angeles", "America/New_York", "Europe/London", "Europe/Berlin", "Asia/Kolkata", "Asia/Tokyo", "Australia/Sydney"];

@@ -1,7 +1,7 @@
-import { and, desc, eq, gt, gte, inArray, isNull } from "drizzle-orm";
+import { and, desc, eq, gt, gte, inArray, isNull, lt, lte } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { InsertUser, globalSourceProbeSnapshots, globalSourceQualitySummaries, globalTimeSources, ntpHealthSnapshots, operatorAgentInstallations, operatorAttestationChallenges, operatorHealthAttestations, publicStabilityEntries, roomRelayEvents, sourceNetworkMetadata, sourceReviewApplications, sourceReviewEvents, timeMeasurements, timeSources, userChronoPreferences, users } from "../drizzle/schema";
+import { InsertUser, fusionObservabilityRollups, globalSourceProbeSnapshots, globalSourceQualitySummaries, globalTimeSources, ntpHealthSnapshots, operatorAgentInstallations, operatorAttestationChallenges, operatorHealthAttestations, publicStabilityEntries, roomRelayEvents, sourceNetworkMetadata, sourceReviewApplications, sourceReviewEvents, timeMeasurements, timeSources, userChronoPreferences, users } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 import { calculateStabilityScore, type SyncEstimate } from "../shared/timeMath";
 import type { TimeSource, UpstreamHealth } from "./ntp";
@@ -9,7 +9,7 @@ import { aggregateSourceAccuracy, getSourceRangeStart, type SourceAccuracyRange 
 import { filterPublicSetupsByTag, normalizeLeaderboardTagFilter } from "../shared/peerComparison";
 import { calculateBackoffMs, canTransitionCommunitySource, type GlobalMeshSource, type MeshProbeReading } from "../shared/globalMesh";
 import { ATTESTATION_CHALLENGE_TTL_MS, deriveAttestationQualityBand, isAttestationFresh, sanitizePublicRationale, sourceStateForReview, type AgentAttestationEnvelope, type AgentPlatform, type PublicSourceApplication, type SourceNetworkMetadata, type SourceReviewDecision } from "../shared/agentTrust";
-import { buildFusionObservability, getFusionObservabilityWindowStart, type FusionObservabilityRange } from "../shared/fusionObservability";
+import { buildFusionObservability, getFusionObservabilityBucketDuration, getFusionObservabilityWindowStart, type FusionObservabilityRange } from "../shared/fusionObservability";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 export function __setDbForTests(db: ReturnType<typeof drizzle> | null) { _db = db; }
@@ -110,20 +110,31 @@ export async function getFusionObservability(range: FusionObservabilityRange) {
   const generatedAtMs = Date.now();
   if (!db) return buildFusionObservability({ range, generatedAtMs, sources: [], readings: [], freshAttestationSourceIds: [], reviewStatuses: [] });
   const windowStartMs = getFusionObservabilityWindowStart(range, generatedAtMs);
-  const [sources, snapshots, attestations, reviewApplications] = await Promise.all([
+  const usePersistedRollups = range === "7d" || range === "30d" || range === "90d";
+  const rollupGranularity = range === "7d" ? "hour" : "day";
+  const [sources, snapshots, rollups, attestations, reviewApplications] = await Promise.all([
     db.select({ id: globalTimeSources.id, state: globalTimeSources.state, groupKey: globalTimeSources.groupKey }).from(globalTimeSources).limit(400),
-    db.select({ sourceId: globalSourceProbeSnapshots.sourceId, status: globalSourceProbeSnapshots.status, offsetMs: globalSourceProbeSnapshots.offsetMs, delayMs: globalSourceProbeSnapshots.delayMs, uncertaintyMs: globalSourceProbeSnapshots.uncertaintyMs, sampledAtMs: globalSourceProbeSnapshots.sampledAtMs }).from(globalSourceProbeSnapshots).where(gte(globalSourceProbeSnapshots.sampledAtMs, windowStartMs)).orderBy(desc(globalSourceProbeSnapshots.sampledAtMs)).limit(10_000),
+    usePersistedRollups ? Promise.resolve([]) : db.select({ sourceId: globalSourceProbeSnapshots.sourceId, status: globalSourceProbeSnapshots.status, offsetMs: globalSourceProbeSnapshots.offsetMs, delayMs: globalSourceProbeSnapshots.delayMs, uncertaintyMs: globalSourceProbeSnapshots.uncertaintyMs, sampledAtMs: globalSourceProbeSnapshots.sampledAtMs }).from(globalSourceProbeSnapshots).where(gte(globalSourceProbeSnapshots.sampledAtMs, windowStartMs)).orderBy(desc(globalSourceProbeSnapshots.sampledAtMs)).limit(10_000),
+    usePersistedRollups ? db.select({ bucketStartMs: fusionObservabilityRollups.bucketStartMs, bucketEndMs: fusionObservabilityRollups.bucketEndMs, sampleCount: fusionObservabilityRollups.sampleCount, reachableCount: fusionObservabilityRollups.reachableCount, measuredCount: fusionObservabilityRollups.measuredCount, medianDelayMs: fusionObservabilityRollups.medianDelayMs, medianUncertaintyMs: fusionObservabilityRollups.medianUncertaintyMs, medianAbsoluteOffsetMs: fusionObservabilityRollups.medianAbsoluteOffsetMs, observedSourceCount: fusionObservabilityRollups.observedSourceCount }).from(fusionObservabilityRollups).where(and(eq(fusionObservabilityRollups.granularity, rollupGranularity), gt(fusionObservabilityRollups.bucketEndMs, windowStartMs), lte(fusionObservabilityRollups.bucketStartMs, generatedAtMs))).orderBy(fusionObservabilityRollups.bucketStartMs).limit(10_000) : Promise.resolve([]),
     db.select({ sourceId: operatorHealthAttestations.sourceId, sampledAtMs: operatorHealthAttestations.sampledAtMs }).from(operatorHealthAttestations).where(eq(operatorHealthAttestations.status, "accepted")).orderBy(desc(operatorHealthAttestations.sampledAtMs)).limit(2_000),
     db.select({ status: sourceReviewApplications.status }).from(sourceReviewApplications).limit(1_000),
   ]);
   const sourceIds = sources.map(source => source.id);
   const metadata = sourceIds.length ? await db.select({ sourceId: sourceNetworkMetadata.sourceId, asn: sourceNetworkMetadata.asn, regionCode: sourceNetworkMetadata.regionCode }).from(sourceNetworkMetadata).where(inArray(sourceNetworkMetadata.sourceId, sourceIds)).limit(400) : [];
   const metadataBySource = new Map(metadata.map(item => [item.sourceId, item]));
+  const coverage = usePersistedRollups ? (() => {
+    const expectedBucketCount = Math.ceil((generatedAtMs - windowStartMs) / getFusionObservabilityBucketDuration(range));
+    const observedFromMs = rollups.length ? Math.min(...rollups.map(rollup => rollup.bucketStartMs)) : null;
+    const coveragePct = expectedBucketCount ? Math.min(100, (rollups.length / expectedBucketCount) * 100) : null;
+    return { mode: "persisted_rollup" as const, availableBucketCount: rollups.length, expectedBucketCount, coveragePct, observedFromMs, partial: rollups.length > 0 && rollups.length < expectedBucketCount };
+  })() : undefined;
   return buildFusionObservability({
     range,
     generatedAtMs,
     sources: sources.map(source => ({ ...source, asn: metadataBySource.get(source.id)?.asn ?? null, regionCode: metadataBySource.get(source.id)?.regionCode ?? null })),
     readings: snapshots,
+    rollups: usePersistedRollups ? rollups : undefined,
+    coverage,
     freshAttestationSourceIds: attestations.filter(attestation => isAttestationFresh(attestation.sampledAtMs, generatedAtMs)).map(attestation => attestation.sourceId),
     reviewStatuses: reviewApplications.map(application => application.status),
   });
@@ -194,6 +205,20 @@ export async function getCommunitySourceVerification(ownerUserId: number, source
   return source ?? null;
 }
 
+function medianValue(values: number[]): number | null { const sorted = [...values].sort((a, b) => a - b); const middle = Math.floor(sorted.length / 2); return sorted.length ? (sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2) : null; }
+
+/** Replaces one bounded aggregate bucket; no host, contributor, or peer identity is retained in the result. */
+export async function materializeFusionObservabilityRollup(bucketStartMs: number, bucketEndMs: number, granularity: "hour" | "day") {
+  const db = await getDb();
+  if (!db || !Number.isFinite(bucketStartMs) || !Number.isFinite(bucketEndMs) || bucketEndMs <= bucketStartMs) return false;
+  const entries = await db.select({ sourceId: globalSourceProbeSnapshots.sourceId, status: globalSourceProbeSnapshots.status, offsetMs: globalSourceProbeSnapshots.offsetMs, delayMs: globalSourceProbeSnapshots.delayMs, uncertaintyMs: globalSourceProbeSnapshots.uncertaintyMs }).from(globalSourceProbeSnapshots).where(and(gte(globalSourceProbeSnapshots.sampledAtMs, bucketStartMs), lt(globalSourceProbeSnapshots.sampledAtMs, bucketEndMs))).limit(20_000);
+  const reachable = entries.filter(entry => entry.status === "reachable");
+  const measured = reachable.filter(entry => entry.offsetMs !== null && entry.delayMs !== null && entry.uncertaintyMs !== null);
+  await db.delete(fusionObservabilityRollups).where(and(eq(fusionObservabilityRollups.granularity, granularity), eq(fusionObservabilityRollups.bucketStartMs, bucketStartMs), eq(fusionObservabilityRollups.bucketEndMs, bucketEndMs)));
+  await db.insert(fusionObservabilityRollups).values({ granularity, bucketStartMs, bucketEndMs, bucketDurationMs: bucketEndMs - bucketStartMs, sampleCount: entries.length, reachableCount: reachable.length, measuredCount: measured.length, medianDelayMs: medianValue(measured.map(entry => entry.delayMs!)), medianUncertaintyMs: medianValue(measured.map(entry => entry.uncertaintyMs!)), medianAbsoluteOffsetMs: medianValue(measured.map(entry => Math.abs(entry.offsetMs!))), observedSourceCount: new Set(entries.map(entry => entry.sourceId)).size });
+  return true;
+}
+
 export async function storeGlobalMeshProbeReadings(readings: MeshProbeReading[]) {
   const db = await getDb(); if (!db || !readings.length) return false;
   await db.insert(globalSourceProbeSnapshots).values(readings.map(reading => ({ sourceId: reading.sourceId, status: reading.status, detail: reading.detail ?? null, offsetMs: reading.offsetMs, delayMs: reading.delayMs, uncertaintyMs: reading.uncertaintyMs, stratum: reading.stratum ?? null, sampledAtMs: reading.sampledAtMs })));
@@ -205,9 +230,12 @@ export async function storeGlobalMeshProbeReadings(readings: MeshProbeReading[])
     await db.update(globalTimeSources).set({ lastProbeAtMs: reading.sampledAtMs, consecutiveFailures: failures, nextEligibleAtMs: failed ? reading.sampledAtMs + calculateBackoffMs(failures) : null }).where(eq(globalTimeSources.id, reading.sourceId));
     const probeHistory = await db.select().from(globalSourceProbeSnapshots).where(eq(globalSourceProbeSnapshots.sourceId, reading.sourceId)).orderBy(desc(globalSourceProbeSnapshots.sampledAtMs)).limit(120);
     const reachable = probeHistory.filter(item => item.status === "reachable" && item.offsetMs !== null && item.delayMs !== null && item.uncertaintyMs !== null);
-    const medianValue = (values: number[]) => { const sorted = [...values].sort((a, b) => a - b); const middle = Math.floor(sorted.length / 2); return sorted.length ? (sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2) : null; };
     await db.insert(globalSourceQualitySummaries).values({ sourceId: reading.sourceId, reachableSamples: reachable.length, totalSamples: probeHistory.length, medianOffsetMs: medianValue(reachable.map(item => item.offsetMs!)), medianUncertaintyMs: medianValue(reachable.map(item => item.uncertaintyMs!)), medianDelayMs: medianValue(reachable.map(item => item.delayMs!)) }).onDuplicateKeyUpdate({ set: { reachableSamples: reachable.length, totalSamples: probeHistory.length, medianOffsetMs: medianValue(reachable.map(item => item.offsetMs!)), medianUncertaintyMs: medianValue(reachable.map(item => item.uncertaintyMs!)), medianDelayMs: medianValue(reachable.map(item => item.delayMs!)), updatedAt: new Date() } });
   }
+  const hourMs = 60 * 60 * 1_000; const dayMs = 24 * hourMs;
+  const buckets = new Map<string, { bucketStartMs: number; bucketEndMs: number; granularity: "hour" | "day" }>();
+  for (const reading of readings) for (const [duration, granularity] of [[hourMs, "hour"], [dayMs, "day"]] as const) { const bucketStartMs = Math.floor(reading.sampledAtMs / duration) * duration; buckets.set(`${granularity}:${bucketStartMs}`, { bucketStartMs, bucketEndMs: bucketStartMs + duration, granularity }); }
+  await Promise.all(Array.from(buckets.values()).map(bucket => materializeFusionObservabilityRollup(bucket.bucketStartMs, bucket.bucketEndMs, bucket.granularity).catch(error => console.warn("[Fusion observability] roll-up materialization failed:", error))));
   return true;
 }
 
